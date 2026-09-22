@@ -114,6 +114,10 @@ class Longshot:
                 self.positions = s.get("positions", {})
                 self.closed = s.get("closed", [])
                 self.peak = s.get("peak", {})
+                # Drop dips already past their TTL rather than carrying them in.
+                now = time.time()
+                self.dipped = {k: float(t) for k, t in (s.get("dipped") or {}).items()
+                               if now - float(t) <= config.LS_DIP_TTL}
                 self.log(f"longshot resumed: {len(self.positions)} open, "
                          f"{len(self.closed)} closed")
             except Exception as e:
@@ -122,8 +126,12 @@ class Longshot:
     def save(self):
         self.dirty = False
         tmp = config.LONGSHOT_STATE.with_suffix(".tmp")
+        # `dipped` is persisted because we restart often: without it, a market
+        # that already dipped would have to dip again before it could be
+        # bought, and the entry would simply be missed.
         tmp.write_text(json.dumps({
             "positions": self.positions, "closed": self.closed, "peak": self.peak,
+            "dipped": self.dipped,
             "saved": datetime.now(timezone.utc).isoformat(),
         }, indent=2, default=str))
         tmp.replace(config.LONGSHOT_STATE)
