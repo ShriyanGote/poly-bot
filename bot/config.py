@@ -1,6 +1,7 @@
 """Central configuration."""
 
 from decimal import Decimal
+from typing import NamedTuple
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -84,17 +85,57 @@ LS_SPORTS = {"tennis", "football"}
 # justification is the structural measurements above, which have 100-90,000
 # observations, plus a mechanism (scoring drives compound). Revisit after
 # three or four more NFL weeks before believing any of it.
+# Tennis waits for a bounce instead of buying the first touch of the band.
+# Measured two ways on the moneyline tape:
+#
+#   backtest        first touch in 1-5%              96 trades  -68%
+#                   dip to <=0.04 then buy at 0.05   50 trades  -56%
+#                   dip to <=0.03 then buy at 0.05   29 trades  -36%
+#
+#   forward odds at 1-5%, 450 spaced samples, fair P(2x) = 50%
+#                   already bounced off a lower price  n=135  P(2x) 30%
+#                   at or making new lows              n=315  P(2x) 22%
+#
+# A price only recovers when the player is actually winning points; one still
+# falling is a match still getting worse. We were buying both the same way.
+# The loose setting is used rather than the best-looking one: it keeps 50 of
+# 96 trades instead of 29, and -36% was the best of five variants on a sample
+# too small to pick a winner from.
 LS_SPORT_RULES = {
+    "tennis": {"dip_to": Decimal("0.04"), "buy_back": Decimal("0.05")},
     "football": {"band_lo": Decimal("0.10"), "band_hi": Decimal("0.20"),
                  "arm": Decimal("2.0"), "drawdown": Decimal("0.35")},
 }
 
+# How long a dip stays valid. Long enough to cover a match, short enough that
+# the set of markets that have dipped cannot grow without bound.
+# Trade only moneylines. Every measurement behind the rules above - the entry
+# bands, the bounce filter, the momentum finding - was made on aec- markets.
+# The engine was happily buying spreads, totals and player props alongside
+# them, which are a different bet: a spread at 3c reaching 95c is the event
+# happening, not a comeback. NFL spreads measured -61% against -37% for the
+# moneyline. Existing positions are still managed; this gates new entries.
+LS_MONEYLINE_ONLY = True
 
-def rules_for(sport):
-    """Entry band and trailing stop for a sport, falling back to the globals."""
+LS_DIP_TTL = 6 * 3600
+LS_DIP_MAX = 20000
+
+
+class SportRules(NamedTuple):
+    band_lo: Decimal
+    band_hi: Decimal
+    arm: Decimal
+    drawdown: Decimal
+    dip_to: Decimal | None      # price must first trade at or below this...
+    buy_back: Decimal | None    # ...then be bought when it returns to this
+
+
+def rules_for(sport) -> SportRules:
+    """Entry and exit rules for a sport, falling back to the globals."""
     r = LS_SPORT_RULES.get(sport) or {}
-    return (r.get("band_lo", LS_BAND_LO), r.get("band_hi", LS_BAND_HI),
-            r.get("arm", LS_TRAIL_ARM), r.get("drawdown", LS_TRAIL_DRAWDOWN))
+    return SportRules(r.get("band_lo", LS_BAND_LO), r.get("band_hi", LS_BAND_HI),
+                      r.get("arm", LS_TRAIL_ARM), r.get("drawdown", LS_TRAIL_DRAWDOWN),
+                      r.get("dip_to"), r.get("buy_back"))
 # Seconds of a silent book before we ask the API what happened. This used to
 # be 600, from when absence-of-feed was the only evidence and guessing wrong
 # booked a live position as a loss. It is no longer a guess: _settlement_of()

@@ -59,11 +59,25 @@ class Longshot:
         self.skipped_unknown: set[str] = set()
         self.skipped_stale: set[str] = set()
         self.skipped_tiebreak: set[str] = set()
+        # key -> when the price was last seen at or below the dip threshold.
+        # Pruned by age and size so it cannot grow without bound.
+        self.dipped: dict[str, float] = {}
+        self.skipped_prop: set[str] = set()
         # State is what ./ls.py reads. Saving only on the 180s discovery sweep
         # meant a sale showed in the log seconds after it happened but took
         # minutes to appear in the viewer.
         self.dirty = False
         self._load()
+
+    def _prune_dipped(self, now):
+        """Drop stale dips. Every market that ever trades under the threshold
+        lands here, not just the ones we buy, so it needs a ceiling."""
+        if len(self.dipped) <= config.LS_DIP_MAX:
+            self.dipped = {k: t for k, t in self.dipped.items()
+                           if now - t <= config.LS_DIP_TTL}
+            return
+        keep = sorted(self.dipped.items(), key=lambda kv: -kv[1])
+        self.dipped = dict(keep[:config.LS_DIP_MAX // 2])
 
     def request_close(self, want):
         """Mark positions to be sold on their next book update.
@@ -124,6 +138,9 @@ class Longshot:
         # Existing positions are always managed; only NEW entries are gated by
         # sport, so nothing already open gets stranded.
         can_open = (config.LS_SPORTS is None or sport in config.LS_SPORTS)
+        if can_open and config.LS_MONEYLINE_ONLY and market_kind(slug) != "moneyline":
+            can_open = False
+            self.skipped_prop.add(slug)
         if (can_open and self._live is not None
                 and now - self._live_at > config.LIVENESS_MAX_AGE):
             # We cannot see which games are running. Opening on a stale
@@ -157,7 +174,19 @@ class Longshot:
                 continue
             if key in self.peak:          # already traded this side once
                 continue
-            band_lo, band_hi, arm, draw = config.rules_for(sport)
+            r = config.rules_for(sport)
+            band_lo, band_hi, arm, draw = r.band_lo, r.band_hi, r.arm, r.drawdown
+            if r.dip_to is not None:
+                # Wait for the bounce: the price must first trade down to the
+                # dip level, and is only bought once it has come back up.
+                if band_lo <= price <= r.dip_to:
+                    self.dipped[key] = now
+                    continue
+                seen = self.dipped.get(key)
+                if seen is None or now - seen > config.LS_DIP_TTL:
+                    continue
+                if price < r.buy_back:
+                    continue
             if not (band_lo <= price <= band_hi):
                 continue
             if exit_px <= 0:              # no bid to ever sell into
@@ -181,6 +210,8 @@ class Longshot:
                 "arm": str(arm), "drawdown": str(draw),
             }
             self.peak[key] = str(price)
+            self.dipped.pop(key, None)
+            self._prune_dipped(now)
             self.dirty = True
             self.log(f"LSBUY | {league:9} {sport:10} {side:5} {qty:>4} @ {price} "
                      f"= ${price*qty:>5.2f}  {'timed' if sport in TIMED else 'hold'}  "
@@ -210,9 +241,9 @@ class Longshot:
             # Let winners run, but never give back more than the drawdown.
             # A fixed multiple capped 15-36x winners at 5x; holding returned
             # them to zero.
-            _, _, sport_arm, sport_draw = config.rules_for(sport)
-            arm = Decimal(pos.get("arm") or sport_arm)
-            draw = Decimal(pos.get("drawdown") or sport_draw)
+            sr = config.rules_for(sport)
+            arm = Decimal(pos.get("arm") or sr.arm)
+            draw = Decimal(pos.get("drawdown") or sr.drawdown)
             if peak >= entry * arm:
                 floor = peak * (Decimal("1") - draw)
                 if exit_px <= floor:
@@ -394,6 +425,8 @@ class Longshot:
             skips.append(f"{len(self.skipped_stale)} stale-liveness")
         if self.skipped_tiebreak:
             skips.append(f"{len(self.skipped_tiebreak)} tiebreak")
+        if self.skipped_prop:
+            skips.append(f"{len(self.skipped_prop)} non-moneyline")
         dead = f" | skipped {' + '.join(skips)}" if skips else ""
         return (f"longshot: {len(self.positions)} open | closed {len(self.closed)} "
                 f"{wins}W | staked ${staked:.2f} pnl {pnl:+.2f} ({roi:+.0f}%){dead}")
