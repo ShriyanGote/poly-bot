@@ -59,6 +59,21 @@ def _members(path):
             pos = m.start()
 
 
+def _known_headers():
+    """{column count: header} for every layout a tape may have on disk.
+
+    A column added mid-day means rows written afterwards are longer than the
+    header row at the top of the file - and a length mismatch used to drop
+    them in silence. Adding "score" cost ~70% of one day's tennis rows before
+    this was noticed, so match a row to the layout of its own width instead.
+    """
+    from .storage import BOOK_HEADER
+    out = {}
+    for h in (config.BOOK_HEADER_FALLBACK, BOOK_HEADER):
+        out[len(h)] = list(h)
+    return out
+
+
 def _rows(path):
     """Rows from a tape, recovering past damaged members."""
     try:
@@ -82,7 +97,11 @@ def _rows(path):
             if header is None:
                 header = list(config.BOOK_HEADER_FALLBACK)
             if len(parts) != len(header):
-                continue                  # torn line at a member edge
+                alt = _known_headers().get(len(parts))
+                if alt is None:
+                    continue              # genuinely torn at a member edge
+                yield dict(zip(alt, parts))
+                continue
             yield dict(zip(header, parts))
 
 
