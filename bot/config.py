@@ -252,6 +252,12 @@ RECORD_STARTED_UNKNOWN = True
 # even though the feed as a whole still looks alive.
 CONN_STALE_SECS = 300
 
+# Reconciliation: how often to check that markets we think we are
+# subscribed to are actually producing data, and how long a live market
+# may stay silent before we stop believing our own bookkeeping.
+RECONCILE_INTERVAL = 60
+RECONCILE_MAX_AGE = 300
+
 LIVENESS_INTERVAL = 30
 # If liveness cannot be refreshed for this long, stop opening rather than
 # trade on a stale picture. Managing existing positions continues regardless.

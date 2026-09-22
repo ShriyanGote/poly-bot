@@ -82,6 +82,11 @@ class Recorder:
         self.last_msg = time.time()
         self.stale_reconnects = 0
         self.stale_conns = 0
+        self.tick_at = {}        # slug -> last time real data arrived
+        self.sub_at = {}         # slug -> when we last subscribed it
+        self.dark_found = 0
+        self._live_found = set()
+        self._last_reconcile = 0
 
     def log(self, msg):
         line = f"{datetime.now(timezone.utc).strftime('%m-%d %H:%M:%S')} {msg}"
@@ -161,6 +166,7 @@ class Recorder:
         if bid <= 0 or ask <= 0 or ask <= bid:
             return
         self.msgs += 1
+        self.tick_at[slug] = time.time()
         league, event, period, tick = self.meta.get(
             slug, (league_from_slug(slug), "?", "?", config.DEFAULT_TICK))
         bt, at = total_qty(bids, config.BOOK_LEVELS), total_qty(offers, config.BOOK_LEVELS)
@@ -408,9 +414,56 @@ class Recorder:
                 continue
             conn["slugs"] |= set(chunk)
             self.subscribed |= set(chunk)
+            now_sub = time.time()
+            for slug in chunk:
+                self.sub_at[slug] = now_sub
             placed += len(chunk)
         self.last_msg = time.time()
         return placed
+
+    async def _reconcile(self):
+        """Verify that markets we believe we are subscribed to are ticking.
+
+        Two bugs now have had the same shape: we trusted self.subscribed
+        instead of checking whether data was arriving. The subscription cap
+        marked markets subscribed that the server had refused, and retiring a
+        socket orphaned the markets on it. Both were invisible because the
+        bookkeeping said everything was fine.
+
+        So check the claim directly. A live market that has produced nothing
+        since well after we subscribed it is not subscribed, whatever our
+        records say - resubscribe it and say so.
+        """
+        cutoff = time.time() - config.RECONCILE_MAX_AGE
+        dark = [s for s in self.subscribed
+                if s in self._live_found
+                # Never ticked? Then judge from when we subscribed it, which
+                # is what catches a subscribe the server silently refused.
+                and max(self.tick_at.get(s, 0), self.sub_at.get(s, 0)) < cutoff]
+        if not dark:
+            return
+        self.dark_found += len(dark)
+        never = sum(1 for s in dark if s not in self.tick_at)
+        self.log(f"RECONCILE: {len(dark)} live market(s) marked subscribed but "
+                 f"silent >{config.RECONCILE_MAX_AGE}s ({never} never ticked) "
+                 f"- resubscribing [{self.dark_found} total]")
+        for s in dark[:5]:
+            self.log(f"  dark: {s[:60]}")
+        # Free the slots before asking for them again, or _subscribe finds
+        # every connection full and opens pointless new ones.
+        gone = set(dark)
+        self.subscribed -= gone
+        for c in self.conns:
+            c["slugs"] -= gone
+        await self._subscribe(dark)
+
+    def _prune_seen(self):
+        """Keep the tick/subscribe stamps bounded."""
+        keep = self.subscribed | self._live_found
+        for d in (self.tick_at, self.sub_at):
+            if len(d) > config.META_MAX:
+                for slug in [k for k in d if k not in keep]:
+                    del d[slug]
 
     async def run(self):
         self.log(f"start | {len(config.SERIES)} series "
@@ -428,6 +481,8 @@ class Recorder:
                         pass
                 self.conns.clear()
                 self.subscribed.clear()
+                self.sub_at.clear()
+                self.tick_at.clear()
                 self.last_msg = time.time()
                 backoff = 5
                 # Resubscribe what we already know about right away; a fresh
@@ -473,6 +528,12 @@ class Recorder:
                     if c["slugs"] and quiet > config.CONN_STALE_SECS:
                         self.stale_conns += 1
                         self._retire(c, f"silent {quiet:.0f}s while peers live")
+
+            if (self.subscribed and self._live_found
+                    and now - self._last_reconcile >= config.RECONCILE_INTERVAL):
+                self._last_reconcile = now
+                await self._reconcile()
+                self._prune_seen()
 
             if self.longshot:
                 self._drain_requests()
@@ -525,6 +586,7 @@ class Recorder:
                 # Do NOT prune meta. There is no unsubscribe, so a market that
                 # drops out of a sweep keeps streaming; forgetting its league
                 # sent 49,407 rows to the "?" tape. Keep a bounded history.
+                self._live_found = set(found)
                 self.meta.update(found)
                 if len(self.meta) > config.META_MAX:
                     for slug in list(self.meta)[:len(self.meta) - config.META_MAX]:
@@ -581,6 +643,8 @@ class Recorder:
         parts.append(f"quiet {time.time()-self.last_msg:.0f}s")
         if self.stale_conns:
             parts.append(f"deadconn {self.stale_conns}")
+        if self.dark_found:
+            parts.append(f"dark {self.dark_found}")
         if self.reconnects:
             parts.append(f"reconn {self.reconnects}")
         if self.stale_reconnects:
