@@ -53,7 +53,48 @@ LS_TRAIL_SINCE = 1790010000.0      # 2026-09-21 17:00:00 UTC
 # under every arm/drawdown combination tried (best case -23%). Setka Cup table
 # tennis was 18 of 27 trades and dominated the losses.
 # Everything is still RECORDED; this only limits what we buy.
-LS_SPORTS = {"tennis"}
+LS_SPORTS = {"tennis", "football"}
+
+# Per-sport rules. Anything a sport does not override falls back to the
+# LS_BAND_*/LS_TRAIL_* values below, so tennis behaves exactly as before.
+#
+# Football is not a second copy of the tennis rule, it is close to its
+# opposite, and the numbers behind that are:
+#
+#   spread at the entry price (25k-92k quotes, so this part is solid)
+#       NFL   1-5c  bid/ask 83%  -> break-even 1.20x
+#       NFL 10-20c  bid/ask 96%  -> break-even 1.04x   <- nearly frictionless
+#       tennis 1-5c bid/ask 67%  -> break-even 1.50x
+#
+#   fair-odds test, P(ever reach Nx) against the martingale 1/N
+#       NFL 10-20c  P(2x) 47% (fair 50)   P(3x) 41% (fair 33)   +8
+#       NFL   1-5c  P(2x) 16%             P(3x)  7%             awful
+#       tennis 1-5c P(2x) 24%             P(3x) 17%             -16
+#
+#   momentum, P(3x | already doubled), fair = 67%
+#       NFL 10-20c  88%   <- once an NFL longshot doubles it keeps going
+#       tennis 1-5c 73%
+#
+# So: enter higher (10-20c, where the odds are fair and the book is tight),
+# and give it more room (35% rather than 25%), because a price that trends
+# this strongly would be stopped out early by the tennis drawdown.
+#
+# WARNING: this rests on ONE weekend and 14 NFL moneyline markets. The direct
+# backtest of it is 13 trades at -6%, t=-0.16, which confirms nothing. The
+# justification is the structural measurements above, which have 100-90,000
+# observations, plus a mechanism (scoring drives compound). Revisit after
+# three or four more NFL weeks before believing any of it.
+LS_SPORT_RULES = {
+    "football": {"band_lo": Decimal("0.10"), "band_hi": Decimal("0.20"),
+                 "arm": Decimal("2.0"), "drawdown": Decimal("0.35")},
+}
+
+
+def rules_for(sport):
+    """Entry band and trailing stop for a sport, falling back to the globals."""
+    r = LS_SPORT_RULES.get(sport) or {}
+    return (r.get("band_lo", LS_BAND_LO), r.get("band_hi", LS_BAND_HI),
+            r.get("arm", LS_TRAIL_ARM), r.get("drawdown", LS_TRAIL_DRAWDOWN))
 # Seconds of a silent book before we ask the API what happened. This used to
 # be 600, from when absence-of-feed was the only evidence and guessing wrong
 # booked a live position as a loss. It is no longer a guess: _settlement_of()

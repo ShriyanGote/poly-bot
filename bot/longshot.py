@@ -157,7 +157,8 @@ class Longshot:
                 continue
             if key in self.peak:          # already traded this side once
                 continue
-            if not (config.LS_BAND_LO <= price <= config.LS_BAND_HI):
+            band_lo, band_hi, arm, draw = config.rules_for(sport)
+            if not (band_lo <= price <= band_hi):
                 continue
             if exit_px <= 0:              # no bid to ever sell into
                 continue
@@ -175,6 +176,9 @@ class Longshot:
                 # Match state when we bought, so entry conditions can be
                 # compared later on a real sample rather than guessed at.
                 "entry_period": str(period or ""), "entry_score": str(score or ""),
+                # Pinned at entry: changing LS_SPORT_RULES later must not
+                # retroactively move the stop on a position already open.
+                "arm": str(arm), "drawdown": str(draw),
             }
             self.peak[key] = str(price)
             self.dirty = True
@@ -203,11 +207,14 @@ class Longshot:
         peak = Decimal(pos["peak_px"])
 
         if config.LS_USE_TRAIL:
-            # Let winners run, but never give back more than half the peak.
+            # Let winners run, but never give back more than the drawdown.
             # A fixed multiple capped 15-36x winners at 5x; holding returned
             # them to zero.
-            if peak >= entry * config.LS_TRAIL_ARM:
-                floor = peak * (Decimal("1") - config.LS_TRAIL_DRAWDOWN)
+            _, _, sport_arm, sport_draw = config.rules_for(sport)
+            arm = Decimal(pos.get("arm") or sport_arm)
+            draw = Decimal(pos.get("drawdown") or sport_draw)
+            if peak >= entry * arm:
+                floor = peak * (Decimal("1") - draw)
                 if exit_px <= floor:
                     self._close(key, pos, exit_px, "trail", now)
             return
