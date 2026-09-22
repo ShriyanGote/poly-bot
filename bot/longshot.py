@@ -16,6 +16,7 @@ see, so winners are not mis-measured when a market leaves our subscription.
 
 import json
 import time
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -62,7 +63,11 @@ class Longshot:
         # key -> when the price was last seen at or below the dip threshold.
         # Pruned by age and size so it cannot grow without bound.
         self.dipped: dict[str, float] = {}
+        # Recent book-update times per market, for the activity gate. Bounded
+        # by the window, so it cannot grow with runtime.
+        self.recent: dict[str, deque] = defaultdict(deque)
         self.skipped_prop: set[str] = set()
+        self.skipped_quiet: set[str] = set()
         # State is what ./ls.py reads. Saving only on the 180s discovery sweep
         # meant a sale showed in the log seconds after it happened but took
         # minutes to appear in the viewer.
@@ -150,6 +155,7 @@ class Longshot:
 
         # Existing positions are always managed; only NEW entries are gated by
         # sport, so nothing already open gets stranded.
+        busy = self._busy(slug, now)
         can_open = (config.LS_SPORTS is None or sport in config.LS_SPORTS)
         if can_open and config.LS_MONEYLINE_ONLY and market_kind(slug) != "moneyline":
             can_open = False
@@ -203,11 +209,21 @@ class Longshot:
                 if price < r.buy_back:
                     st["up"] = None               # fell back; restart the clock
                     continue
-                if st.get("up") is None:
-                    st["up"] = now
-                    continue
-                if now - st["up"] < r.hold_secs:
-                    continue
+                if r.hold_secs:
+                    # Only wait when a hold is configured. With hold_secs 0
+                    # this used to still need a SECOND tick at the buy-back
+                    # level, so "no hold" was really a one-tick delay and did
+                    # not match what the backtest simulated.
+                    if st.get("up") is None:
+                        st["up"] = now
+                        continue
+                    if now - st["up"] < r.hold_secs:
+                        continue
+            if r.min_ticks and busy < r.min_ticks:
+                # A book this quiet does not produce runs: 9-11% ever double
+                # against 27% for a busy one.
+                self.skipped_quiet.add(slug)
+                continue
             if not (band_lo <= price <= band_hi):
                 continue
             if exit_px <= 0:              # no bid to ever sell into
@@ -238,6 +254,17 @@ class Longshot:
             self.log(f"LSBUY | {league:9} {sport:10} {side:5} {qty:>4} @ {price} "
                      f"= ${price*qty:>5.2f}  {'timed' if sport in TIMED else 'hold'}  "
                      f"{slug[:34]}")
+
+    def _busy(self, slug, now):
+        """How many book updates this market had in the activity window."""
+        q = self.recent[slug]
+        q.append(now)
+        while q and now - q[0] > config.MIN_TICKS_WINDOW:
+            q.popleft()
+        if not q:                       # market went quiet; stop holding a key
+            self.recent.pop(slug, None)
+            return 0
+        return len(q)
 
     def _manage(self, key, pos, exit_px, sport, now):
         pos["last_seen"] = now
@@ -462,6 +489,8 @@ class Longshot:
             skips.append(f"{len(self.skipped_tiebreak)} tiebreak")
         if self.skipped_prop:
             skips.append(f"{len(self.skipped_prop)} non-moneyline")
+        if self.skipped_quiet:
+            skips.append(f"{len(self.skipped_quiet)} quiet-book")
         dead = f" | skipped {' + '.join(skips)}" if skips else ""
         return (f"longshot: {len(self.positions)} open | closed {len(self.closed)} "
                 f"{wins}W | staked ${staked:.2f} pnl {pnl:+.2f} ({roi:+.0f}%){dead}")

@@ -113,7 +113,7 @@ LS_SPORTS = {"tennis", "football"}
 # 3-7 trades. Volume drops to about a quarter of the original either way.
 LS_SPORT_RULES = {
     "tennis": {"dip_to": Decimal("0.04"), "buy_back": Decimal("0.05"),
-               "hold_secs": 60},
+               "hold_secs": 0, "min_ticks": 100},
     "football": {"band_lo": Decimal("0.10"), "band_hi": Decimal("0.20"),
                  "arm": Decimal("2.0"), "drawdown": Decimal("0.35")},
 }
@@ -148,6 +148,7 @@ LS_RULE_ERAS = (
     (0,          "first-touch 1-5%"),
     (1790045097, "bounce 0.04->0.05"),      # 2026-09-22 02:44:57 UTC
     (1790047021, "bounce + hold 60s"),      # 2026-09-22 03:17:01 UTC
+    (1790085600, "bounce + activity"),      # 2026-09-22 14:00:00 UTC
 )
 
 
@@ -157,7 +158,11 @@ def rule_label(sport) -> str:
     if r.dip_to is None:
         return f"first-touch {float(r.band_lo)*100:.0f}-{float(r.band_hi)*100:.0f}%"
     base = f"bounce {float(r.dip_to):.2f}->{float(r.buy_back):.2f}"
-    return f"{base} + hold {r.hold_secs:.0f}s" if r.hold_secs else base
+    if r.hold_secs:
+        base += f" + hold {r.hold_secs:.0f}s"
+    if r.min_ticks:
+        base += " + activity"
+    return base
 
 
 def era_of(opened) -> str:
@@ -169,6 +174,27 @@ def era_of(opened) -> str:
     return label
 
 
+# A dead book cannot produce a run. Measured on 1-5% tennis quotes, sampled
+# 180s apart so the windows barely overlap:
+#
+#   updates in the last 10 min      n     P(2x)   P(3x)
+#   quiet (<20)                    55       11%      7%
+#   normal (20-100)                43        9%      7%
+#   busy (>=100)                  279       27%     19%
+#
+# It is the only filter that improves every variant while costing almost no
+# volume, and it is the forward-looking version of something the book already
+# showed: losing trades peak a median 0.0 minutes after entry, because their
+# books were already dead when we bought.
+MIN_TICKS_WINDOW = 600
+
+# The 60s hold is OFF. It looked like the best rule on ROI (+3% against -50%)
+# but the decomposition showed why: it catches the SAME 7 winners for the same
+# +$17.80 and simply declines 26 losing stakes. It finds no better trades, it
+# just takes half as many - and a filter that halves the trade count is
+# gambling with the tail. aec-utr-staced-mcdcia was a +$49 that the tighter
+# filters skipped; one of those outweighs every loser avoided. Volume also
+# matters because ~1,700 trades are needed to measure anything here.
 LS_DIP_TTL = 6 * 3600
 LS_DIP_MAX = 20000
 
@@ -184,6 +210,7 @@ class SportRules(NamedTuple):
     dip_to: Optional[Decimal]   # price must first trade at or below this...
     buy_back: Optional[Decimal]  # ...then come back to at least this...
     hold_secs: int               # ...and stay there this long before we buy
+    min_ticks: int               # book updates required in the last MIN_TICKS_WINDOW
 
 
 def rules_for(sport) -> SportRules:
@@ -191,7 +218,8 @@ def rules_for(sport) -> SportRules:
     r = LS_SPORT_RULES.get(sport) or {}
     return SportRules(r.get("band_lo", LS_BAND_LO), r.get("band_hi", LS_BAND_HI),
                       r.get("arm", LS_TRAIL_ARM), r.get("drawdown", LS_TRAIL_DRAWDOWN),
-                      r.get("dip_to"), r.get("buy_back"), r.get("hold_secs", 0))
+                      r.get("dip_to"), r.get("buy_back"), r.get("hold_secs", 0),
+                      r.get("min_ticks", 0))
 # Seconds of a silent book before we ask the API what happened. This used to
 # be 600, from when absence-of-feed was the only evidence and guessing wrong
 # booked a live position as a loss. It is no longer a guess: _settlement_of()
