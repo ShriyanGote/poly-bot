@@ -113,7 +113,8 @@ LS_SPORTS = {"tennis", "football"}
 # 3-7 trades. Volume drops to about a quarter of the original either way.
 LS_SPORT_RULES = {
     "tennis": {"dip_to": Decimal("0.04"), "buy_back": Decimal("0.05"),
-               "hold_secs": 0, "min_ticks": 100},
+               "hold_secs": 0, "min_ticks": 100,
+               "take": Decimal("5"), "runner": Decimal("8")},
     "football": {"band_lo": Decimal("0.10"), "band_hi": Decimal("0.20"),
                  "arm": Decimal("2.0"), "drawdown": Decimal("0.35")},
 }
@@ -151,6 +152,7 @@ LS_RULE_ERAS = (
     (1790045097, "bounce 0.04->0.05"),                    # 09-22 02:44:57 UTC
     (1790047021, "bounce 0.04->0.05 + hold 60s"),         # 09-22 03:17:01 UTC
     (1790093155, "bounce 0.04->0.05 + activity"),         # 09-22 16:05:55 UTC
+    (1790102544, "bounce 0.04->0.05 + activity, take 5x"),  # 09-22 18:42:24 UTC
 )
 
 
@@ -164,6 +166,8 @@ def rule_label(sport) -> str:
         base += f" + hold {r.hold_secs:.0f}s"
     if r.min_ticks:
         base += " + activity"
+    if r.take is not None:
+        base += f", take {float(r.take):.0f}x"
     return base
 
 
@@ -213,6 +217,13 @@ class SportRules(NamedTuple):
     buy_back: Optional[Decimal]  # ...then come back to at least this...
     hold_secs: int               # ...and stay there this long before we buy
     min_ticks: int               # book updates required in the last MIN_TICKS_WINDOW
+    # Exit. The trailing stop keeps only ~77% of a winner's peak, and across
+    # 240 tennis trades runs past 6x happened 3.8% of the time - too thin to
+    # pay a 23% haircut on every winner for. So take a fixed multiple, and
+    # fall back to trailing only for a run that clears `runner`, which keeps
+    # the rare 14-16x from being capped.
+    take: Optional[Decimal]      # sell outright at this multiple of entry
+    runner: Optional[Decimal]    # ...unless the peak already cleared this
 
 
 def rules_for(sport) -> SportRules:
@@ -221,7 +232,7 @@ def rules_for(sport) -> SportRules:
     return SportRules(r.get("band_lo", LS_BAND_LO), r.get("band_hi", LS_BAND_HI),
                       r.get("arm", LS_TRAIL_ARM), r.get("drawdown", LS_TRAIL_DRAWDOWN),
                       r.get("dip_to"), r.get("buy_back"), r.get("hold_secs", 0),
-                      r.get("min_ticks", 0))
+                      r.get("min_ticks", 0), r.get("take"), r.get("runner"))
 # Seconds of a silent book before we ask the API what happened. This used to
 # be 600, from when absence-of-feed was the only evidence and guessing wrong
 # booked a live position as a loss. It is no longer a guess: _settlement_of()

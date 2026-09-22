@@ -245,6 +245,8 @@ class Longshot:
                 # Pinned at entry: changing LS_SPORT_RULES later must not
                 # retroactively move the stop on a position already open.
                 "arm": str(arm), "drawdown": str(draw),
+                "take": str(r.take) if r.take is not None else None,
+                "runner": str(r.runner) if r.runner is not None else None,
                 "entry_rule": config.rule_label(sport),
             }
             self.peak[key] = str(price)
@@ -287,12 +289,24 @@ class Longshot:
         peak = Decimal(pos["peak_px"])
 
         if config.LS_USE_TRAIL:
-            # Let winners run, but never give back more than the drawdown.
-            # A fixed multiple capped 15-36x winners at 5x; holding returned
-            # them to zero.
             sr = config.rules_for(sport)
             arm = Decimal(pos.get("arm") or sr.arm)
             draw = Decimal(pos.get("drawdown") or sr.drawdown)
+            take = pos.get("take") or sr.take
+            runner = pos.get("runner") or sr.runner
+
+            # Trailing alone keeps only ~77% of a winner's peak, and it was
+            # selling below 5x on 25 of the 45 tennis runs that reached it.
+            # Take the multiple outright instead - but stand aside once a run
+            # clears `runner`, because that is the 14-16x tail a fixed target
+            # would cap, and there the trail earns its haircut.
+            if take is not None:
+                take = Decimal(take)
+                past = runner is not None and peak >= entry * Decimal(runner)
+                if not past and exit_px >= entry * take:
+                    self._close(key, pos, exit_px, "take_profit", now)
+                    return
+
             if peak >= entry * arm:
                 floor = peak * (Decimal("1") - draw)
                 if exit_px <= floor:
