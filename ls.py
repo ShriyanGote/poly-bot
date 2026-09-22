@@ -118,23 +118,44 @@ def render(args, color):
             # Group by the entry rule each trade was taken under. The book
             # spans several, because they were changed mid-run; one blended
             # ROI would describe no strategy that was ever actually running.
+            # LS_RULE_ERAS records when TENNIS rules changed, so it may only
+            # label a tennis trade. Falling back to it for every sport put
+            # football and esports trades under tennis rule names and made
+            # first-touch read -42% across all sports where tennis alone was
+            # -15%. An untagged trade from another sport says so instead.
             eras = defaultdict(list)
             for c in shown:
-                eras[c.get("entry_rule") or config.era_of(c.get("opened", 0))].append(c)
+                tag = c.get("entry_rule")
+                if not tag:
+                    sport = c.get("sport") or "?"
+                    tag = (config.era_of(c.get("opened", 0)) if sport == "tennis"
+                           else f"{sport}, before rules were tagged")
+                eras[tag].append(c)
             if len(eras) > 1:
                 out.append(paint("\n  by entry rule", B, color))
-                out.append(f"    {'rule':34}{'n':>5}{'pnl':>9}{'ROI':>7}{'win%':>6}")
+                if not args.sport:
+                    out.append(paint("    (several sports - use --sport to "
+                                     "compare rules within one)", D, color))
+                out.append(f"    {'rule':48}{'n':>5}{'pnl':>9}{'ROI':>7}{'win%':>6}")
                 order = sorted(eras, key=lambda k: min(x.get("opened", 0)
                                                        for x in eras[k]))
+                # Mark the live rule rather than calling it the last row: it
+                # is last only once it has closed a trade, so right after a
+                # rule change that note points at the rule we just left.
+                live = config.rule_label(args.sport) if args.sport else None
                 for k in order:
                     g = eras[k]
                     st = sum(Decimal(x["entry_px"]) * x["qty"] for x in g)
                     pl = sum(Decimal(x["pnl"]) for x in g)
                     w = sum(1 for x in g if Decimal(x["pnl"]) > 0)
-                    out.append(f"    {k[:33]:34}{len(g):>5}{money(pl, color)}"
+                    tag = "  <- running now" if k == live else ""
+                    out.append(f"    {k[:47]:48}{len(g):>5}{money(pl, color)}"
                                f"{float(pl / st * 100) if st else 0:>6.0f}%"
-                               f"{w / len(g) * 100:>5.0f}%")
-                out.append(paint("    the last row is the rule running now", D, color))
+                               f"{w / len(g) * 100:>5.0f}%"
+                               + paint(tag, D, color))
+                if live and live not in eras:
+                    out.append(paint(f"    running now: {live} "
+                                     "(no closed trades yet)", D, color))
 
             staked = sum(Decimal(c["entry_px"]) * c["qty"] for c in shown)
             pnl = sum(Decimal(c["pnl"]) for c in shown)
