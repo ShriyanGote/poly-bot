@@ -139,6 +139,36 @@ SETTLEMENTS = DATA / "settlements.json"
 SETTLE_HARVEST = 12        # settlement lookups per sweep, to stay under the limit
 SETTLE_GIVE_UP = 36 * 3600  # stop retrying a market's outcome after this long
 
+# Which entry rule was live when. ls.py groups closed trades by these so a
+# blended number is never presented as one strategy's performance - the book
+# spans several rules because they were changed during the run. Boundaries are
+# the recorder restart that deployed each change (see logs/supervisor.log).
+# Positions opened from now on carry entry_rule themselves and do not need it.
+LS_RULE_ERAS = (
+    (0,          "first-touch 1-5%"),
+    (1790045097, "bounce 0.04->0.05"),      # 2026-09-22 02:44:57 UTC
+    (1790047021, "bounce + hold 60s"),      # 2026-09-22 03:17:01 UTC
+)
+
+
+def rule_label(sport) -> str:
+    """Short name for the entry rule a sport is using right now."""
+    r = rules_for(sport)
+    if r.dip_to is None:
+        return f"first-touch {float(r.band_lo)*100:.0f}-{float(r.band_hi)*100:.0f}%"
+    base = f"bounce {float(r.dip_to):.2f}->{float(r.buy_back):.2f}"
+    return f"{base} + hold {r.hold_secs:.0f}s" if r.hold_secs else base
+
+
+def era_of(opened) -> str:
+    """The rule that was live at a given time, for trades predating the tag."""
+    label = LS_RULE_ERAS[0][1]
+    for ts, name in LS_RULE_ERAS:
+        if opened >= ts:
+            label = name
+    return label
+
+
 LS_DIP_TTL = 6 * 3600
 LS_DIP_MAX = 20000
 

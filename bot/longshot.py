@@ -229,6 +229,7 @@ class Longshot:
                 # Pinned at entry: changing LS_SPORT_RULES later must not
                 # retroactively move the stop on a position already open.
                 "arm": str(arm), "drawdown": str(draw),
+                "entry_rule": config.rule_label(sport),
             }
             self.peak[key] = str(price)
             self.dipped.pop(key, None)

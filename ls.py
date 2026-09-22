@@ -115,6 +115,27 @@ def render(args, color):
                            f"{name.get(event_slug(c['slug']), '') or '?':<38.36}"
                            f"{c['slug'][:34]}")
 
+            # Group by the entry rule each trade was taken under. The book
+            # spans several, because they were changed mid-run; one blended
+            # ROI would describe no strategy that was ever actually running.
+            eras = defaultdict(list)
+            for c in shown:
+                eras[c.get("entry_rule") or config.era_of(c.get("opened", 0))].append(c)
+            if len(eras) > 1:
+                out.append(paint("\n  by entry rule", B, color))
+                out.append(f"    {'rule':28}{'n':>5}{'pnl':>9}{'ROI':>7}{'win%':>6}")
+                order = sorted(eras, key=lambda k: min(x.get("opened", 0)
+                                                       for x in eras[k]))
+                for k in order:
+                    g = eras[k]
+                    st = sum(Decimal(x["entry_px"]) * x["qty"] for x in g)
+                    pl = sum(Decimal(x["pnl"]) for x in g)
+                    w = sum(1 for x in g if Decimal(x["pnl"]) > 0)
+                    out.append(f"    {k[:27]:28}{len(g):>5}{money(pl, color)}"
+                               f"{float(pl / st * 100) if st else 0:>6.0f}%"
+                               f"{w / len(g) * 100:>5.0f}%")
+                out.append(paint("    the last row is the rule running now", D, color))
+
             staked = sum(Decimal(c["entry_px"]) * c["qty"] for c in shown)
             pnl = sum(Decimal(c["pnl"]) for c in shown)
             wins = sum(1 for c in shown if Decimal(c["pnl"]) > 0)
