@@ -118,9 +118,13 @@ LS_SPORT_RULES = {
     # threw away everything above 5x, and the 8x escape hatch could not help:
     # a run reaches 5x before 8x, so it always sold first. Arming at 5x fixes
     # the early cut without capping the run.
-    "tennis": {"dip_to": Decimal("0.04"), "buy_back": Decimal("0.05"),
-               "hold_secs": 0, "min_ticks": 100,
-               "arm": Decimal("5"), "drawdown": Decimal("0.20")},
+    # Entry: back to plain first-touch. The bounce gate looked better only
+    # under terminal-zero scoring, which penalised rules in proportion to how
+    # many trades they took - and bounce takes 62% of the volume to
+    # first-touch's 100%. With real settlements the ranking reversed. The
+    # activity gate goes too: it is the same trade-off, less volume for an
+    # edge the corrected data does not show.
+    "tennis": {"arm": Decimal("5"), "drawdown": Decimal("0.20")},
     "football": {"band_lo": Decimal("0.10"), "band_hi": Decimal("0.20"),
                  "arm": Decimal("2.0"), "drawdown": Decimal("0.35")},
 }
@@ -167,6 +171,7 @@ LS_RULE_ERAS = (
     (1790093155, "bounce 0.04->0.05 + activity"),         # 09-22 16:05:55 UTC
     (1790102544, "bounce 0.04->0.05 + activity, take 5x"),  # 09-22 18:42:24 UTC
     (1790107118, "bounce 0.04->0.05 + activity, trail 20% from 5x"),  # 09-22 19:58:38 UTC
+    (1790115378, "first-touch 1-5%, trail 20% from 5x"),   # 09-22 22:16:18 UTC
 )
 
 
@@ -174,7 +179,12 @@ def rule_label(sport) -> str:
     """Short name for the entry rule a sport is using right now."""
     r = rules_for(sport)
     if r.dip_to is None:
-        return f"first-touch {float(r.band_lo)*100:.0f}-{float(r.band_hi)*100:.0f}%"
+        base = f"first-touch {float(r.band_lo)*100:.0f}-{float(r.band_hi)*100:.0f}%"
+        if r.min_ticks:
+            base += " + activity"
+        # Tennis and football both enter on first touch now, so the exit is
+        # what tells their rows apart in ls.py.
+        return base + f", trail {float(r.drawdown):.0%} from {float(r.arm):.0f}x"
     base = f"bounce {float(r.dip_to):.2f}->{float(r.buy_back):.2f}"
     if r.hold_secs:
         base += f" + hold {r.hold_secs:.0f}s"
