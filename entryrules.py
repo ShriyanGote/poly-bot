@@ -18,7 +18,7 @@ already has enough moving parts, and the tape holds everything needed.
 import argparse
 import math
 import sys
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -46,7 +46,7 @@ def load(sport):
     return paths
 
 
-def replay(paths, rule, lo, hi, dip, back, hold, arm, draw, since):
+def replay(paths, rule, lo, hi, dip, back, hold, arm, draw, since, min_ticks=0):
     """One entry per market-side, exited by the live trailing stop."""
     out = []
     for mk, v in paths.items():
@@ -55,7 +55,11 @@ def replay(paths, rule, lo, hi, dip, back, hold, arm, draw, since):
             pnl = None
             armed = False
             up = None
+            recent = deque()
             for ts, b, a in v:
+                recent.append(ts)
+                while recent and ts - recent[0] > config.MIN_TICKS_WINDOW:
+                    recent.popleft()
                 price = a if side == "long" else Decimal(1) - b
                 exitp = b if side == "long" else Decimal(1) - a
                 if entry is None:
@@ -70,10 +74,17 @@ def replay(paths, rule, lo, hi, dip, back, hold, arm, draw, since):
                         elif armed and price >= back:
                             if up is None:
                                 up = ts
-                            if (rule == "bounce" or ts - up >= hold) and price <= hi:
+                            ready = rule == "bounce" or not hold or ts - up >= hold
+                            if ready and price <= hi:
                                 entry, at = price, ts
                         else:
                             up = None
+                    # A dead book cannot produce a run, so the live rule will
+                    # not buy into one. Applied after the entry test so it
+                    # only rejects trades that would otherwise be taken.
+                    if entry is not None and min_ticks and len(recent) < min_ticks:
+                        entry = None
+                        continue
                     if entry is None:
                         continue
                     if since and at < since:      # entered before the window
@@ -97,7 +108,7 @@ def replay(paths, rule, lo, hi, dip, back, hold, arm, draw, since):
 
 def report(label, t, base_n):
     if not t:
-        print(f"  {label:26}{0:>5}{'-':>9}{'-':>7}{'-':>6}{'-':>8}")
+        print(f"  {label:32}{0:>5}{'-':>9}{'-':>7}{'-':>6}{'-':>8}")
         return
     p = [float(x[0]) for x in t]
     n = len(p)
@@ -107,7 +118,7 @@ def report(label, t, base_n):
     staked = float(sum(x[1] for x in t))
     wins = sum(1 for x in p if x > 0)
     vol = f"{n / base_n * 100:.0f}%" if base_n else "-"
-    print(f"  {label:26}{n:>5}{sum(p) / staked * 100:>8.0f}%"
+    print(f"  {label:32}{n:>5}{sum(p) / staked * 100:>8.0f}%"
           f"{(mean / se if se else 0):>7.2f}{wins / n * 100:>5.0f}%{vol:>8}")
 
 
@@ -135,24 +146,26 @@ def main():
     print(f"{a.sport}: {len(paths)} moneyline markets"
           + (f", entries after {a.since} UTC" if since else "") + "\n")
 
-    runs = [("first-touch (original)", "first-touch"),
-            (f"bounce {float(dip):.2f}->{float(back):.2f}, no hold", "bounce"),
-            (f"bounce + hold {hold:.0f}s  (LIVE)", "hold")]
+    mt = r.min_ticks
+    runs = [("first-touch (original)", "first-touch", 0),
+            (f"bounce {float(dip):.2f}->{float(back):.2f}", "bounce", 0),
+            ("first-touch + activity", "first-touch", mt or 100),
+            (f"{config.rule_label(a.sport)}  (LIVE)", "hold" if hold else "bounce", mt)]
     base = replay(paths, "first-touch", r.band_lo, r.band_hi, dip, back,
                   hold, r.arm, r.drawdown, since)
-    print(f"  {'rule':26}{'n':>5}{'ROI':>9}{'t':>7}{'win%':>6}{'volume':>8}")
-    print("  " + "-" * 61)
+    print(f"  {'rule':32}{'n':>5}{'ROI':>9}{'t':>7}{'win%':>6}{'volume':>8}")
+    print("  " + "-" * 67)
     results = {}
-    for label, kind in runs:
-        t = base if kind == "first-touch" else replay(
-            paths, kind, r.band_lo, r.band_hi, dip, back, hold,
-            r.arm, r.drawdown, since)
-        results[kind] = t
+    for label, kind, mticks in runs:
+        t = (base if kind == "first-touch" and not mticks else
+             replay(paths, kind, r.band_lo, r.band_hi, dip, back, hold,
+                    r.arm, r.drawdown, since, mticks))
+        results[label] = t
         report(label, t, len(base))
 
     if a.trades:
-        for label, kind in runs:
-            t = results[kind]
+        for label, kind, _mt in runs:
+            t = results[label]
             if not t:
                 continue
             print(f"\n{label}: {len(t)} trades")
