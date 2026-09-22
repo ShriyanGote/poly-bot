@@ -145,6 +145,13 @@ LS_MONEYLINE_ONLY = True
 SETTLEMENTS = DATA / "settlements.json"
 SETTLE_HARVEST = 12        # settlement lookups per sweep, to stay under the limit
 SETTLE_GIVE_UP = 36 * 3600  # stop retrying a market's outcome after this long
+# A settlement publishes minutes to hours after a match ends, so a miss is
+# normal and must not cost the market its place in the queue. Back each miss
+# off instead: strict oldest-first plus a per-sweep cap let a dozen markets
+# that never publish hold the front of the queue and starve everything behind
+# them, which is how recording stalled at 55 while matches kept finishing.
+SETTLE_BACKOFF = (60, 180, 600, 1800, 3600)
+PENDING_SETTLE = DATA / "pending_settle.json"
 
 # Which entry rule was live when. ls.py groups closed trades by these so a
 # blended number is never presented as one strategy's performance - the book

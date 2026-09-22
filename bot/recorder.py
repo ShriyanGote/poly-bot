@@ -71,7 +71,10 @@ class Recorder:
         self.cap_dropped = 0
         self._last_liveness = 0.0
         self._last_settle = 0.0
-        self._pending_settle: dict[str, float] = {}
+        # {slug: {"since": first queued, "next": earliest retry, "tries": n}}
+        # Persisted: a market drops out of discovery exactly once, so a queue
+        # lost to a restart is never rebuilt and its outcome never recorded.
+        self._pending_settle = self._load_pending()
         config.REQUESTS.mkdir(exist_ok=True)
         self.subscribed = set()
         self.conns = []          # [{"ws": ws, "slugs": set()}]
@@ -82,6 +85,7 @@ class Recorder:
         self.last_msg = time.time()
         self.stale_reconnects = 0
         self.stale_conns = 0
+        self.settle_queue = (0, 0)   # (pending, backed off) for the status line
         self.tick_at = {}        # slug -> last time real data arrived
         self.sub_at = {}         # slug -> when we last subscribed it
         self.dark_found = 0
@@ -214,6 +218,34 @@ class Recorder:
         await ws.connect()
         return ws
 
+    @staticmethod
+    def _load_pending():
+        try:
+            raw = json.loads(config.PENDING_SETTLE.read_text())
+        except (OSError, ValueError):
+            return {}
+        out = {}
+        for slug, v in (raw or {}).items():
+            if isinstance(v, dict):
+                out[slug] = {"since": float(v.get("since", 0)),
+                             "next": float(v.get("next", 0)),
+                             "tries": int(v.get("tries", 0))}
+            else:                                  # pre-backoff format
+                out[slug] = {"since": float(v), "next": 0.0, "tries": 0}
+        return out
+
+    def _save_pending(self):
+        try:
+            tmp = config.PENDING_SETTLE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self._pending_settle))
+            tmp.replace(config.PENDING_SETTLE)
+        except OSError as e:
+            self.log(f"could not save pending settlements: {e}")
+
+    def _queue_settle(self, slug, now):
+        self._pending_settle.setdefault(
+            slug, {"since": now, "next": 0.0, "tries": 0})
+
     def _harvest_settlements(self):
         """Record what finished markets actually paid, permanently.
 
@@ -226,7 +258,7 @@ class Recorder:
         # Anything the API still shows as ended is worth queuing too, but the
         # main source is markets that dropped out of discovery.
         for event in list(self.disc.ended):
-            self._pending_settle.setdefault(f"aec-{event}", time.time())
+            self._queue_settle(f"aec-{event}", time.time())
             self.disc.ended.discard(event)
         if not self._pending_settle:
             return
@@ -238,8 +270,13 @@ class Recorder:
         now = time.time()
         done = 0
         wrote = False
-        # oldest first: a settlement takes a while to publish after the match
-        for slug, since in sorted(self._pending_settle.items(), key=lambda kv: kv[1]):
+        # Only markets whose backoff has elapsed compete for the budget, and
+        # among those the oldest goes first. A market that keeps missing backs
+        # off further, so it cannot hold a slot that a just-finished match
+        # needs.
+        due = [(v["since"], slug) for slug, v in self._pending_settle.items()
+               if v["next"] <= now]
+        for since, slug in sorted(due):
             if slug in have:
                 self._pending_settle.pop(slug, None)
                 continue
@@ -249,15 +286,24 @@ class Recorder:
             if done >= config.SETTLE_HARVEST:
                 break
             done += 1
+            ent = self._pending_settle[slug]
             try:
                 v = self.client.markets.settlement(slug).get("settlement")
             except Exception:
-                continue          # not published yet; retried next sweep
-            if v is None:
+                v = None
+            if v is None:         # not published yet - wait longer next time
+                ent["tries"] += 1
+                step = config.SETTLE_BACKOFF[min(ent["tries"] - 1,
+                                                 len(config.SETTLE_BACKOFF) - 1)]
+                ent["next"] = now + step
                 continue
             have[slug] = str(v)
             self._pending_settle.pop(slug, None)
             wrote = True
+        self._save_pending()
+        if self._pending_settle:
+            waiting = sum(1 for v in self._pending_settle.values() if v["next"] > now)
+            self.settle_queue = (len(self._pending_settle), waiting)
         if wrote:
             try:
                 tmp = path.with_suffix(".tmp")
@@ -577,7 +623,7 @@ class Recorder:
                     # before its settlement is published. A market dropping
                     # out of discovery is the signal that it is over.
                     if slug.startswith("aec-"):
-                        self._pending_settle.setdefault(slug, now)
+                        self._queue_settle(slug, now)
                 # Those markets keep streaming (nothing unsubscribes them), so
                 # tell the longshot which ones are still live before it can
                 # open anything else into a finished game.
@@ -645,6 +691,8 @@ class Recorder:
             parts.append(f"deadconn {self.stale_conns}")
         if self.dark_found:
             parts.append(f"dark {self.dark_found}")
+        if self.settle_queue[0]:
+            parts.append(f"settleq {self.settle_queue[0]}")
         if self.reconnects:
             parts.append(f"reconn {self.reconnects}")
         if self.stale_reconnects:
@@ -671,6 +719,7 @@ class Recorder:
                      f"({r['rec2_rate']*100:.0f}%)  {r['market'][:32]}")
 
     def shutdown(self):
+        self._save_pending()
         if self.longshot:
             self.longshot.save()
             self.log(self.longshot.summary())
