@@ -356,16 +356,29 @@ class Longshot:
             pass
         try:
             md = self.client.markets.bbo(slug).get("marketData") or {}
-            if md.get("state") == "MARKET_STATE_EXPIRED":
-                px = (md.get("settlementPx") or {}).get("value")
-                if px is not None:
-                    val = Decimal(str(px))
-                    # A moneyline pays 0 or 1. Anything else on this endpoint
-                    # means expired-but-not-yet-resolved: 0.5 is a placeholder,
-                    # and taking it literally booked a 0.02 entry as +$24.
-                    # Wait for markets.settlement() to say what happened.
-                    if val in (Decimal(0), Decimal(1)):
-                        return val
+            if md.get("state") != "MARKET_STATE_EXPIRED":
+                return None
+            px = (md.get("settlementPx") or {}).get("value")
+            if px is None:
+                return None
+            val = Decimal(str(px))
+            # settlementPx on this endpoint is a placeholder until the real
+            # result lands, and the placeholder is not always the same: 0.5
+            # booked a 0.02 entry as +$24, and 0.0 booked a losing short as
+            # +$19. So it is only believed when the last traded price agrees
+            # with it - a market that settles at 1 was trading high, and one
+            # that settles at 0 was trading low. Anything else waits for
+            # markets.settlement(), which is authoritative.
+            if val not in (Decimal(0), Decimal(1)):
+                return None
+            last = ((md.get("lastTradePx") or {}).get("value")
+                    or (md.get("currentPx") or {}).get("value"))
+            if last is None:
+                return None
+            last = Decimal(str(last))
+            if (val == 1 and last >= Decimal("0.5")) or \
+               (val == 0 and last <= Decimal("0.5")):
+                return val
         except Exception:
             pass
         return None
