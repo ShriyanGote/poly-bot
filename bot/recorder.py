@@ -199,6 +199,30 @@ class Recorder:
         await ws.connect()
         return ws
 
+    def _save_titles(self):
+        """Write the event-title cache the viewers read.
+
+        ls.py used to fetch these itself, which meant a read-only viewer made
+        blocking API calls with no timeout and could hang for a minute. We are
+        already pulling every event here, so the titles come free.
+        """
+        if not self.disc.titles:
+            return
+        path = config.DATA / "event_titles.json"
+        try:
+            have = json.loads(path.read_text()) if path.exists() else {}
+        except ValueError:
+            have = {}
+        merged = {**have, **self.disc.titles}
+        if merged == have:
+            return
+        try:
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(merged))
+            tmp.replace(path)
+        except OSError:
+            pass
+
     def _drain_requests(self):
         """Pick up sell orders left by ./sell.py.
 
@@ -424,6 +448,7 @@ class Recorder:
                     if k:
                         self.log(f"settled {k} longshot position(s)")
                     self.longshot.save()
+                self._save_titles()
                 self.store.flush()
                 if now - self._last_scorecard >= config.SCORECARD_INTERVAL:
                     self._dump_scorecard()

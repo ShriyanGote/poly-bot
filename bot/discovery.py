@@ -115,6 +115,9 @@ class Discovery:
     # {event_slug: "6-3, 2-1:30-15"} as of the last sweep. Kept beside the
     # meta tuple rather than inside it, so nothing that unpacks meta breaks.
     scores: dict = {}
+    # {event_slug: "A vs. B"}. The recorder writes these to disk so the CLI
+    # tools can show match names without making a single network call.
+    titles: dict = {}
 
     def liveness(self):
         """{market_slug: bool} - is this market's game actually running now.
@@ -212,6 +215,8 @@ class Discovery:
                 sc = e.get("score") or st.get("score")
                 if sc:
                     self.scores[e.get("slug", "")] = str(sc)
+                if e.get("slug") and e.get("title"):
+                    self.titles[e["slug"]] = str(e["title"])
                 keep = []
                 ticks = {}
                 for m in e.get("markets", []):

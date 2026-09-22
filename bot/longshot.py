@@ -74,9 +74,9 @@ class Longshot:
         lands here, not just the ones we buy, so it needs a ceiling."""
         if len(self.dipped) <= config.LS_DIP_MAX:
             self.dipped = {k: t for k, t in self.dipped.items()
-                           if now - t <= config.LS_DIP_TTL}
+                           if now - t["dip"] <= config.LS_DIP_TTL}
             return
-        keep = sorted(self.dipped.items(), key=lambda kv: -kv[1])
+        keep = sorted(self.dipped.items(), key=lambda kv: -kv[1]["dip"])
         self.dipped = dict(keep[:config.LS_DIP_MAX // 2])
 
     def request_close(self, want):
@@ -116,8 +116,13 @@ class Longshot:
                 self.peak = s.get("peak", {})
                 # Drop dips already past their TTL rather than carrying them in.
                 now = time.time()
-                self.dipped = {k: float(t) for k, t in (s.get("dipped") or {}).items()
-                               if now - float(t) <= config.LS_DIP_TTL}
+                # Older states stored a bare timestamp per key; treat those
+                # as a dip with the hold clock not yet started.
+                self.dipped = {}
+                for k, t in (s.get("dipped") or {}).items():
+                    d = t if isinstance(t, dict) else {"dip": float(t), "up": None}
+                    if now - float(d["dip"]) <= config.LS_DIP_TTL:
+                        self.dipped[k] = d
                 self.log(f"longshot resumed: {len(self.positions)} open, "
                          f"{len(self.closed)} closed")
             except Exception as e:
@@ -185,15 +190,23 @@ class Longshot:
             r = config.rules_for(sport)
             band_lo, band_hi, arm, draw = r.band_lo, r.band_hi, r.arm, r.drawdown
             if r.dip_to is not None:
-                # Wait for the bounce: the price must first trade down to the
-                # dip level, and is only bought once it has come back up.
+                # Wait for a recovery that holds. The price must trade down to
+                # the dip level, come back to the buy-back level, and STAY
+                # there - a single tick up is noise at these prices, not a
+                # bounce, and it happens constantly on the way down.
+                st = self.dipped.get(key)
                 if band_lo <= price <= r.dip_to:
-                    self.dipped[key] = now
+                    self.dipped[key] = {"dip": now, "up": None}
                     continue
-                seen = self.dipped.get(key)
-                if seen is None or now - seen > config.LS_DIP_TTL:
+                if not isinstance(st, dict) or now - st["dip"] > config.LS_DIP_TTL:
                     continue
                 if price < r.buy_back:
+                    st["up"] = None               # fell back; restart the clock
+                    continue
+                if st.get("up") is None:
+                    st["up"] = now
+                    continue
+                if now - st["up"] < r.hold_secs:
                     continue
             if not (band_lo <= price <= band_hi):
                 continue

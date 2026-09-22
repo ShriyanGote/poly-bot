@@ -98,11 +98,22 @@ LS_SPORTS = {"tennis", "football"}
 #
 # A price only recovers when the player is actually winning points; one still
 # falling is a match still getting worse. We were buying both the same way.
-# The loose setting is used rather than the best-looking one: it keeps 50 of
-# 96 trades instead of 29, and -36% was the best of five variants on a sample
-# too small to pick a winner from.
+# A one-tick bounce is not a recovery. At 4c a single tick is a quarter of the
+# price, so "dipped then came back" fires constantly on the way down: we
+# bought aec-itfme-shetan-jundon at 0.05 after it ticked 0.04 -> 0.05, and it
+# went straight on to 0.03. The price must now HOLD at or above the buy-back
+# level for hold_secs, and any dip back below it resets the clock.
+#
+#   first touch                              96 trades  -68%   9% win
+#   dip<=0.04 -> 0.05, no hold               51 trades  -57%  12% win
+#   dip<=0.04 -> 0.05, held 60s              24 trades   -9%  25% win
+#   dip<=0.04 -> 0.05, held 300s              7 trades  +20%  29% win
+#
+# 60s is taken rather than the better-looking longer holds because those are
+# 3-7 trades. Volume drops to about a quarter of the original either way.
 LS_SPORT_RULES = {
-    "tennis": {"dip_to": Decimal("0.04"), "buy_back": Decimal("0.05")},
+    "tennis": {"dip_to": Decimal("0.04"), "buy_back": Decimal("0.05"),
+               "hold_secs": 60},
     "football": {"band_lo": Decimal("0.10"), "band_hi": Decimal("0.20"),
                  "arm": Decimal("2.0"), "drawdown": Decimal("0.35")},
 }
@@ -130,7 +141,8 @@ class SportRules(NamedTuple):
     # system python (3.9), where a NamedTuple body evaluates its annotations
     # and PEP 604 unions do not exist yet.
     dip_to: Optional[Decimal]   # price must first trade at or below this...
-    buy_back: Optional[Decimal]  # ...then be bought when it returns to this
+    buy_back: Optional[Decimal]  # ...then come back to at least this...
+    hold_secs: int               # ...and stay there this long before we buy
 
 
 def rules_for(sport) -> SportRules:
@@ -138,7 +150,7 @@ def rules_for(sport) -> SportRules:
     r = LS_SPORT_RULES.get(sport) or {}
     return SportRules(r.get("band_lo", LS_BAND_LO), r.get("band_hi", LS_BAND_HI),
                       r.get("arm", LS_TRAIL_ARM), r.get("drawdown", LS_TRAIL_DRAWDOWN),
-                      r.get("dip_to"), r.get("buy_back"))
+                      r.get("dip_to"), r.get("buy_back"), r.get("hold_secs", 0))
 # Seconds of a silent book before we ask the API what happened. This used to
 # be 600, from when absence-of-feed was the only evidence and guessing wrong
 # booked a live position as a loss. It is no longer a guess: _settlement_of()

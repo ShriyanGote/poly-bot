@@ -41,84 +41,19 @@ def event_slug(market_slug):
 
 
 def titles(wanted):
-    """{event_slug: "A vs. B"}, cached on disk.
+    """{event_slug: "A vs. B"} from the cache the recorder maintains.
 
-    The engine never stored titles, and the abbreviations in a slug are not
-    reversible (puilav-smirac is Puiac, Alexia Lavinia vs Smith, Rachael), so
-    they have to come from the API. One bulk fetch fills in everything on
-    screen; after that this is a file read.
+    This deliberately makes no network call. It used to fetch missing titles
+    itself, which turned a read-only viewer into something that could block
+    for a minute on a slow API with no timeout. The recorder already pulls
+    every event on its discovery sweep and writes them here.
     """
-    cache = {}
-    if TITLES.exists():
-        try:
-            cache = json.loads(TITLES.read_text())
-        except ValueError:
-            cache = {}
-    missing = {e for e in wanted if e not in cache}
-    if not missing:
-        return cache
-    # The recorder is polling the same API every 30s, so a viewer must not
-    # retry a full fetch on every invocation just because some old event is
-    # no longer served. One attempt per REFETCH_SECS, whatever the outcome.
-    if time.time() - float(cache.get("__last_fetch", 0) or 0) < REFETCH_SECS:
-        return cache
-    cache["__last_fetch"] = time.time()
+    if not TITLES.exists():
+        return {}
     try:
-        import os
-        from datetime import timedelta
-        from dotenv import load_dotenv
-        from polymarket_us import PolymarketUS
-        load_dotenv(str(Path(__file__).resolve().parent / ".env"))
-        c = PolymarketUS(key_id=os.environ["POLYMARKET_KEY_ID"],
-                         secret_key=os.environ["POLYMARKET_SECRET_KEY"])
-        now = datetime.now(timezone.utc)
-        for closed in (False, True):
-            for page in range(1, 9):
-                q = {"limit": 100, "closed": closed,
-                     "startDateMin": (now - timedelta(hours=30)).isoformat(),
-                     "startDateMax": (now + timedelta(hours=12)).isoformat(),
-                     "orderBy": ["startDate"], "orderDirection": "asc"}
-                if page > 1:
-                    q["offset"] = (page - 1) * 100
-                try:
-                    ev = c.events.list(q).get("events", [])
-                except Exception:
-                    time.sleep(5)          # most likely a rate limit
-                    break
-                for e in ev:
-                    if e.get("slug") and e.get("title"):
-                        cache[e["slug"]] = e["title"]
-                if len(ev) < 100:
-                    break
-                time.sleep(2.5)
-            if not {e for e in wanted if e not in cache}:
-                break
-        # The window fetch misses events whose startDate falls outside it, but
-        # a slug lookup still finds them. Fill a bounded number per run so the
-        # gaps close over a few invocations without a burst of requests.
-        still = [e for e in sorted(missing) if e not in cache]
-        for e in still[:25]:
-            try:
-                got = c.events.list({"limit": 3, "slug": e}).get("events", [])
-            except Exception:
-                break
-            for ev in got:
-                if ev.get("slug") and ev.get("title"):
-                    cache[ev["slug"]] = ev["title"]
-            cache.setdefault(e, "")
-            time.sleep(1.8)
-        for e in missing:
-            cache.setdefault(e, "")   # a title the API no longer serves
-    except Exception:
-        pass                          # a viewer must still work offline
-    if cache:
-        # Save whatever was collected even if the fetch died partway, so a
-        # rate limit mid-run does not throw away every title already in hand.
-        try:
-            TITLES.write_text(json.dumps(cache))
-        except OSError:
-            pass
-    return cache
+        return json.loads(TITLES.read_text())
+    except (ValueError, OSError):
+        return {}
 
 
 def load():
