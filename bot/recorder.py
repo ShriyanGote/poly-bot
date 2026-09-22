@@ -81,6 +81,7 @@ class Recorder:
         self._last_scorecard = 0.0
         self.last_msg = time.time()
         self.stale_reconnects = 0
+        self.stale_conns = 0
 
     def log(self, msg):
         line = f"{datetime.now(timezone.utc).strftime('%m-%d %H:%M:%S')} {msg}"
@@ -104,7 +105,7 @@ class Recorder:
                      f"in {ev['secs_since_low']:.0f}s)  {ev['market'][:34]}")
 
     # --- message handling ----------------------------------------------------
-    def on_message(self, payload, *_):
+    def on_message(self, payload, *_, ws=None):
         if isinstance(payload, str):
             try:
                 payload = json.loads(payload)
@@ -125,6 +126,13 @@ class Recorder:
         # for ~9 hours.
         if got_data:
             self.last_msg = time.time()
+            # Per-connection, not just global: one dead socket among five
+            # leaves the global clock fresh while its markets go silent.
+            if ws is not None:
+                for c in self.conns:
+                    if c["ws"] is ws:
+                        c["seen"] = self.last_msg
+                        break
 
     def _on_trade(self, t):
         slug = t.get("marketSlug")
@@ -194,7 +202,7 @@ class Recorder:
     # --- connection ----------------------------------------------------------
     async def _connect(self):
         ws = self.client.ws.markets()
-        ws.on("message", self.on_message)
+        ws.on("message", lambda payload, *a: self.on_message(payload, ws=ws))
         ws.on("error", lambda *a: self._on_ws_error(ws, a))
         ws.on("close", lambda *a: self.log("WS CLOSED by peer"))
         await ws.connect()
@@ -300,6 +308,33 @@ class Recorder:
             else:
                 self.log(f"MANUAL sell: nothing open matches {want}")
 
+    def _retire(self, conn, why):
+        """Drop a dead socket and hand its markets back for resubscription.
+
+        Retiring used to overwrite conn["slugs"] with filler to mark the
+        socket full. That threw away the only record of what was on it: the
+        markets stayed in self.subscribed, so no sweep ever re-subscribed
+        them, and they went dark on a socket nobody was reading. Thirty-four
+        tennis markets were lost that way in one afternoon.
+        """
+        orphans = set(conn.get("slugs") or ())
+        if conn in self.conns:
+            self.conns.remove(conn)
+        self.subscribed -= orphans
+        ws = conn.get("ws")
+        if ws is not None:
+            asyncio.ensure_future(self._close_quietly(ws))
+        self.log(f"retired connection ({why}); {len(orphans)} market(s) "
+                 f"handed back for resubscription")
+        return orphans
+
+    @staticmethod
+    async def _close_quietly(ws):
+        try:
+            await ws.close()
+        except Exception:
+            pass
+
     def _on_ws_error(self, ws, args):
         """Act on the per-connection subscription cap instead of just logging.
 
@@ -342,7 +377,7 @@ class Recorder:
                              f"({len(self.conns)} connections all full)")
                     break
                 ws = await self._connect()
-                conn = {"ws": ws, "slugs": set()}
+                conn = {"ws": ws, "slugs": set(), "seen": time.time()}
                 self.conns.append(conn)
                 self.log(f"opened connection #{len(self.conns)}")
 
@@ -366,8 +401,10 @@ class Recorder:
                 self.log(f"subscribe refused on connection "
                          f"{self.conns.index(conn) + 1} ({type(e).__name__}); "
                          f"retiring it")
-                conn["slugs"] = set(range(config.MARKETS_PER_CONN))  # mark full
-                pending = chunk + pending
+                orphans = self._retire(conn, type(e).__name__)
+                # Both the markets already on the socket and the ones we were
+                # mid-way through adding need a fresh home.
+                pending = chunk + [x for x in orphans if x not in chunk] + pending
                 continue
             conn["slugs"] |= set(chunk)
             self.subscribed |= set(chunk)
@@ -424,6 +461,18 @@ class Recorder:
                 self.log(f"FEED STALE {silent:.0f}s with {len(self.subscribed)} markets "
                          f"subscribed - forcing reconnect [#{self.stale_reconnects}]")
                 raise ConnectionError(f"feed stale {silent:.0f}s")
+
+            # A single socket can go quiet while the others keep the global
+            # clock fresh, so STALE_SECS above never fires. Retire any
+            # connection that has heard nothing while its peers are healthy;
+            # the next sweep resubscribes its markets on a live socket.
+            if len(self.conns) > 1:
+                fresh = max((c.get("seen", 0) for c in self.conns), default=0)
+                for c in list(self.conns):
+                    quiet = fresh - c.get("seen", 0)
+                    if c["slugs"] and quiet > config.CONN_STALE_SECS:
+                        self.stale_conns += 1
+                        self._retire(c, f"silent {quiet:.0f}s while peers live")
 
             if self.longshot:
                 self._drain_requests()
@@ -530,6 +579,8 @@ class Recorder:
         if self.disc.rate_limit_hits:
             parts.append(f"429x{self.disc.rate_limit_hits}")
         parts.append(f"quiet {time.time()-self.last_msg:.0f}s")
+        if self.stale_conns:
+            parts.append(f"deadconn {self.stale_conns}")
         if self.reconnects:
             parts.append(f"reconn {self.reconnects}")
         if self.stale_reconnects:

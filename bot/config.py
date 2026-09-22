@@ -144,11 +144,13 @@ SETTLE_GIVE_UP = 36 * 3600  # stop retrying a market's outcome after this long
 # spans several rules because they were changed during the run. Boundaries are
 # the recorder restart that deployed each change (see logs/supervisor.log).
 # Positions opened from now on carry entry_rule themselves and do not need it.
+# Labels must match what rule_label() produces, or a trade tagged at entry and
+# a trade attributed by era end up in two rows describing the same rule.
 LS_RULE_ERAS = (
     (0,          "first-touch 1-5%"),
-    (1790045097, "bounce 0.04->0.05"),      # 2026-09-22 02:44:57 UTC
-    (1790047021, "bounce + hold 60s"),      # 2026-09-22 03:17:01 UTC
-    (1790085600, "bounce + activity"),      # 2026-09-22 14:00:00 UTC
+    (1790045097, "bounce 0.04->0.05"),                    # 09-22 02:44:57 UTC
+    (1790047021, "bounce 0.04->0.05 + hold 60s"),         # 09-22 03:17:01 UTC
+    (1790093155, "bounce 0.04->0.05 + activity"),         # 09-22 16:05:55 UTC
 )
 
 
@@ -246,6 +248,10 @@ RECORD_STARTED_UNKNOWN = True
 # bought a decided match: utr-puilav-smirac was already final when we opened
 # at 3%, and settled against us for the whole stake. This poll reads only
 # live/ended and costs the same few requests as a sweep.
+# One socket silent this much longer than its healthiest peer is dead,
+# even though the feed as a whole still looks alive.
+CONN_STALE_SECS = 300
+
 LIVENESS_INTERVAL = 30
 # If liveness cannot be refreshed for this long, stop opening rather than
 # trade on a stale picture. Managing existing positions continues regardless.
