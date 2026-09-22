@@ -118,6 +118,9 @@ class Discovery:
     # {event_slug: "A vs. B"}. The recorder writes these to disk so the CLI
     # tools can show match names without making a single network call.
     titles: dict = {}
+    # Event slugs the API has reported as finished. The recorder turns these
+    # into permanent settlement records while the API still serves them.
+    ended: set = set()
 
     def liveness(self):
         """{market_slug: bool} - is this market's game actually running now.
@@ -146,6 +149,9 @@ class Discovery:
             events = res.get("events", [])
             ok = True
             for e in events:
+                st = e.get("eventState") or {}
+                if (e.get("ended") or st.get("ended")) and e.get("slug"):
+                    self.ended.add(e["slug"])
                 live = (not e.get("closed")
                         and self._state_class(e, e.get("period")) == "live")
                 for m in e.get("markets", []):
@@ -217,6 +223,8 @@ class Discovery:
                     self.scores[e.get("slug", "")] = str(sc)
                 if e.get("slug") and e.get("title"):
                     self.titles[e["slug"]] = str(e["title"])
+                if (e.get("ended") or st.get("ended")) and e.get("slug"):
+                    self.ended.add(e["slug"])
                 keep = []
                 ticks = {}
                 for m in e.get("markets", []):

@@ -31,7 +31,21 @@ was +0.49; about 233 trades are needed for significance. There is no
 demonstrated edge. Treat any positive ROI you see as noise until the trade
 count is far higher.
 
-Live settings (`bot/config.py`):
+**Rules are now per-sport** (`LS_SPORT_RULES`, with the globals as fallback):
+
+    tennis    buy 1-5%, but only after the price dips to <=0.04 and then
+              HOLDS at >=0.05 for 60s. Arm the trail at 3.6x, exit on a 25%
+              drawdown. Skip tiebreaks.
+    football  buy 10-20% on first touch. Arm at 2.0x, exit on 35%.
+    both      moneyline (aec-) markets only.
+
+Football is close to the opposite of tennis on purpose: NFL books at 10-20c
+break even at 1.04x against tennis's 1.50x at 1-5c, price at 10-20c in NFL is
+at or above fair odds, and once an NFL longshot doubles it triples 88% of the
+time against a fair 67%. It is based on ONE weekend and 14 markets; the direct
+backtest is 13 trades at -6%. Revisit after three or four more NFL weeks.
+
+Old settings (still the fallback for any sport without an override):
 
     LS_BAND_LO/HI     0.01 / 0.05
     LS_STAKE          $1.00
@@ -180,6 +194,42 @@ Two live observations worth checking against the accumulated data:
 Both point the same way - toward resting limit sells over reacting to a move -
 but one trade is one trade. Let the table decide.
 
+## Tools
+
+    ./ls.py [--all] [--open] [--sport tennis] [--watch]   the book, reads local files only
+    ./sell.py <name|--all|--min-mult N> [-n]              sell by hand; -n dry run
+    ./entryrules.py [--since HH:MM] [--trades]            replay entry rules on the tape
+    ./lsstop.py [sport]                                   replay stop-loss variants
+
+`entryrules.py` is the evaluator: it replays first-touch / bounce / bounce+hold
+against recorded book data. Prefer adding an analysis there over adding one to
+the live engine - the recorder has enough moving parts.
+
+## Scoring a replay: the thing that made every comparison wrong
+
+A replay has to decide what a position was worth when it never exited. Scoring
+it at zero looked conservative and is catastrophically wrong: `staced-mcdcia`
+entered short at 0.02, the match settled against the long side, and the real
+payoff was **+$49 on a $1 stake**. The replay booked it as -$1.00. In a
+strategy whose entire return lives in the tail, that assumption deletes the
+only trades that matter, and it makes tighter entry rules look better than
+they are because they take fewer of them.
+
+Scoring on real settlements instead has its own trap. markets.settlement()
+stops answering for older markets, and what it still answers for is not a
+random sample: of 163 real tennis trades, the 24 it could resolve returned
++27% while the 139 it could not returned -42%. Scoring only the resolvable
+ones turned a -38% strategy into +60%.
+
+`data/settlements.json` now fixes this going forward. A market dropping out of
+discovery is the signal it is over (events.list is called with closed=False,
+so a finished match vanishes before its settlement publishes - keying off
+`ended` in the live feed records almost nothing). Those markets are queued and
+retried each sweep until the outcome publishes, then stored permanently.
+
+It starts from 2026-09-22 05:00 UTC. Anything recorded before that cannot be
+scored on real outcomes, so replays over the first four days keep the bias.
+
 ## Traps - read this before running any analysis
 
 Four separate times today a result was wrong in the same direction, and the
@@ -199,9 +249,26 @@ Also: a flat spread assumption in cross-validation manufactured a +88% edge
 that was really -23%, and 8.8s sample spacing against a 60s horizon inflated
 t-statistics ~2.6x.
 
+5. **Scoring unexited replay positions at zero**, which deletes the tail - see
+   the section above. This one runs the OTHER way: it makes the strategy look
+   worse, and makes selective entry rules look better than they are.
+
+6. **A settled longshot pays 0 or 1.** Two fabricated settlements booked +$24
+   and +$19 on 2-5c entries because bbo's `settlementPx` is a placeholder
+   until the real result lands - 0.5 once, 0.0 the other time. It is now only
+   believed when the last traded price agrees with it. A large payout on a
+   tiny entry with a flat peak is a bug, not a win.
+
 **Before believing any number, ask what it would look like if losers were
-systematically missing, and whether the measure uses information available at
-decision time.**
+systematically missing, whether the measure uses information available at
+decision time, and what happened to the positions that never exited.**
+
+## Two pythons
+
+The recorder runs under `.venv` (3.11). The CLI tools run under the system
+python (3.9) via `#!/usr/bin/env python`. Anything in `bot/config.py` must
+import on both - `Decimal | None` in a NamedTuple body broke every tool at
+once while the recorder carried on fine.
 
 ## Established negative results - do not re-litigate
 

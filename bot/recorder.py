@@ -71,6 +71,7 @@ class Recorder:
         self.cap_dropped = 0
         self._last_liveness = 0.0
         self._last_settle = 0.0
+        self._pending_settle: dict[str, float] = {}
         config.REQUESTS.mkdir(exist_ok=True)
         self.subscribed = set()
         self.conns = []          # [{"ws": ws, "slugs": set()}]
@@ -198,6 +199,59 @@ class Recorder:
         ws.on("close", lambda *a: self.log("WS CLOSED by peer"))
         await ws.connect()
         return ws
+
+    def _harvest_settlements(self):
+        """Record what finished markets actually paid, permanently.
+
+        markets.settlement() stops answering for older markets, and the ones
+        it still answers for skew heavily to winners, so a backtest scored on
+        whatever happens to resolve is badly biased. Capturing the outcome
+        while it is still available is the only way to score a replay on what
+        really happened rather than on an assumption.
+        """
+        # Anything the API still shows as ended is worth queuing too, but the
+        # main source is markets that dropped out of discovery.
+        for event in list(self.disc.ended):
+            self._pending_settle.setdefault(f"aec-{event}", time.time())
+            self.disc.ended.discard(event)
+        if not self._pending_settle:
+            return
+        path = config.SETTLEMENTS
+        try:
+            have = json.loads(path.read_text()) if path.exists() else {}
+        except ValueError:
+            have = {}
+        now = time.time()
+        done = 0
+        wrote = False
+        # oldest first: a settlement takes a while to publish after the match
+        for slug, since in sorted(self._pending_settle.items(), key=lambda kv: kv[1]):
+            if slug in have:
+                self._pending_settle.pop(slug, None)
+                continue
+            if now - since > config.SETTLE_GIVE_UP:
+                self._pending_settle.pop(slug, None)
+                continue
+            if done >= config.SETTLE_HARVEST:
+                break
+            done += 1
+            try:
+                v = self.client.markets.settlement(slug).get("settlement")
+            except Exception:
+                continue          # not published yet; retried next sweep
+            if v is None:
+                continue
+            have[slug] = str(v)
+            self._pending_settle.pop(slug, None)
+            wrote = True
+        if wrote:
+            try:
+                tmp = path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(have))
+                tmp.replace(path)
+                self.log(f"settlements recorded: {len(have)} total")
+            except OSError:
+                pass
 
     def _save_titles(self):
         """Write the event-title cache the viewers read.
@@ -407,6 +461,13 @@ class Recorder:
                 gone = self.subscribed - set(found)
                 for slug in gone:
                     self.exc.kill(slug, "market_gone")
+                    # Queue its outcome. Waiting to see `ended` in the live
+                    # query does not work: events.list is called with
+                    # closed=False, so a finished match vanishes from view
+                    # before its settlement is published. A market dropping
+                    # out of discovery is the signal that it is over.
+                    if slug.startswith("aec-"):
+                        self._pending_settle.setdefault(slug, now)
                 # Those markets keep streaming (nothing unsubscribes them), so
                 # tell the longshot which ones are still live before it can
                 # open anything else into a finished game.
@@ -449,6 +510,7 @@ class Recorder:
                         self.log(f"settled {k} longshot position(s)")
                     self.longshot.save()
                 self._save_titles()
+                await asyncio.to_thread(self._harvest_settlements)
                 self.store.flush()
                 if now - self._last_scorecard >= config.SCORECARD_INTERVAL:
                     self._dump_scorecard()

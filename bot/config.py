@@ -128,6 +128,17 @@ LS_SPORT_RULES = {
 # moneyline. Existing positions are still managed; this gates new entries.
 LS_MONEYLINE_ONLY = True
 
+# Outcomes are recorded while the exchange still serves them. markets.
+# settlement() stops answering for older markets, and the ones it still
+# answers for are not a random sample: on 2026-09-22 the 24 of our 163
+# tennis trades it could still resolve returned +27%, while the 139 it could
+# not returned -42%. Backtesting on whatever happened to resolve produced a
+# +60% result for a strategy actually running at -38%. This file makes every
+# outcome permanent so a replay can be scored on what really happened.
+SETTLEMENTS = DATA / "settlements.json"
+SETTLE_HARVEST = 12        # settlement lookups per sweep, to stay under the limit
+SETTLE_GIVE_UP = 36 * 3600  # stop retrying a market's outcome after this long
+
 LS_DIP_TTL = 6 * 3600
 LS_DIP_MAX = 20000
 
