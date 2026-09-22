@@ -159,7 +159,7 @@ LS_RULE_ERAS = (
     (1790047021, "bounce 0.04->0.05 + hold 60s"),         # 09-22 03:17:01 UTC
     (1790093155, "bounce 0.04->0.05 + activity"),         # 09-22 16:05:55 UTC
     (1790102544, "bounce 0.04->0.05 + activity, take 5x"),  # 09-22 18:42:24 UTC
-    (1790106979, "bounce 0.04->0.05 + activity, trail 20% from 5x"),  # 09-22 19:56:19 UTC
+    (1790107118, "bounce 0.04->0.05 + activity, trail 20% from 5x"),  # 09-22 19:58:38 UTC
 )
 
 
