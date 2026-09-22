@@ -112,9 +112,15 @@ LS_SPORTS = {"tennis", "football"}
 # 60s is taken rather than the better-looking longer holds because those are
 # 3-7 trades. Volume drops to about a quarter of the original either way.
 LS_SPORT_RULES = {
+    # Exit: arm the trail AT the take-profit level rather than selling there.
+    # Arming at 3.6x was the original fault - the stop fired between 3.6x and
+    # 5x and cut 25 of 45 runs short. Selling outright at 5x fixed that but
+    # threw away everything above 5x, and the 8x escape hatch could not help:
+    # a run reaches 5x before 8x, so it always sold first. Arming at 5x fixes
+    # the early cut without capping the run.
     "tennis": {"dip_to": Decimal("0.04"), "buy_back": Decimal("0.05"),
                "hold_secs": 0, "min_ticks": 100,
-               "take": Decimal("5"), "runner": Decimal("8")},
+               "arm": Decimal("5"), "drawdown": Decimal("0.20")},
     "football": {"band_lo": Decimal("0.10"), "band_hi": Decimal("0.20"),
                  "arm": Decimal("2.0"), "drawdown": Decimal("0.35")},
 }
@@ -153,6 +159,7 @@ LS_RULE_ERAS = (
     (1790047021, "bounce 0.04->0.05 + hold 60s"),         # 09-22 03:17:01 UTC
     (1790093155, "bounce 0.04->0.05 + activity"),         # 09-22 16:05:55 UTC
     (1790102544, "bounce 0.04->0.05 + activity, take 5x"),  # 09-22 18:42:24 UTC
+    (1790106979, "bounce 0.04->0.05 + activity, trail 20% from 5x"),  # 09-22 19:56:19 UTC
 )
 
 
@@ -166,8 +173,13 @@ def rule_label(sport) -> str:
         base += f" + hold {r.hold_secs:.0f}s"
     if r.min_ticks:
         base += " + activity"
+    # Only the bounce path carries an exit suffix. Appending it to the
+    # first-touch path too would split football's existing rows in two for a
+    # rule that never changed.
     if r.take is not None:
         base += f", take {float(r.take):.0f}x"
+    else:
+        base += f", trail {float(r.drawdown):.0%} from {float(r.arm):.0f}x"
     return base
 
 
