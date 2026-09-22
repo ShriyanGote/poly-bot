@@ -1,7 +1,7 @@
 """Central configuration."""
 
 from decimal import Decimal
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -126,8 +126,11 @@ class SportRules(NamedTuple):
     band_hi: Decimal
     arm: Decimal
     drawdown: Decimal
-    dip_to: Decimal | None      # price must first trade at or below this...
-    buy_back: Decimal | None    # ...then be bought when it returns to this
+    # Optional[...] rather than `Decimal | None`: the CLI tools run under the
+    # system python (3.9), where a NamedTuple body evaluates its annotations
+    # and PEP 604 unions do not exist yet.
+    dip_to: Optional[Decimal]   # price must first trade at or below this...
+    buy_back: Optional[Decimal]  # ...then be bought when it returns to this
 
 
 def rules_for(sport) -> SportRules:
