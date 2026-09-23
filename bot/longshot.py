@@ -47,6 +47,15 @@ class Longshot:
     def __init__(self, log, client=None):
         self.log = log
         self.client = client
+        # Real-money arm. None unless a client exists AND the switch is on, so
+        # no code path can reach an order without both.
+        self.broker = None
+        if client is not None and config.LS_REAL_ENABLED:
+            from .broker import Broker
+            self.broker = Broker(client, log)
+            left, cash = self.broker.remaining()
+            self.log(f"REAL MONEY ARMED: {left} trades / ${cash:.2f} remaining "
+                     f"| sports {sorted(config.LS_REAL_SPORTS)}")
         self.positions: dict[str, dict] = {}
         self.closed: list[dict] = []
         self.peak: dict[str, str] = {}
@@ -245,10 +254,19 @@ class Longshot:
                 # Pinned at entry: changing LS_SPORT_RULES later must not
                 # retroactively move the stop on a position already open.
                 "arm": str(arm), "drawdown": str(draw),
+                "real": False,
                 "take": str(r.take) if r.take is not None else None,
                 "runner": str(r.runner) if r.runner is not None else None,
                 "entry_rule": config.rule_label(sport),
             }
+            # Real order, if armed and every guard passes. Paper bookkeeping is
+            # identical either way, so a rejected or unfilled real order simply
+            # leaves this a paper trade rather than losing the signal.
+            if self.broker is not None:
+                held = {p["slug"] for p in self.positions.values() if p.get("real")}
+                got = self.broker.open_real(slug, side, qty, price, sport, held)
+                if got:
+                    self.positions[key].update(got)
             self.peak[key] = str(price)
             self.dipped.pop(key, None)
             self._prune_dipped(now)
@@ -340,6 +358,16 @@ class Longshot:
                 fired[name] = str(exit_px)
 
     def _close(self, key, pos, px, reason, now):
+        # A real position must be sold before the paper book forgets it. If the
+        # sale fails we leave the position open and try again on the next tick -
+        # closing the paper record while still holding the real shares would
+        # lose track of actual money.
+        if pos.get("real") and self.broker is not None and reason != "settled":
+            got, avg = self.broker.close_real(pos, px)
+            if not got:
+                return
+            pos["real_exit_px"] = f"{avg:.4f}"
+            pos["real_exit_qty"] = got
         entry = Decimal(pos["entry_px"])
         pnl = (Decimal(px) - entry) * pos["qty"]
         rec = {**pos, "exit_px": str(px), "pnl": str(pnl),

@@ -118,7 +118,8 @@ def render(args, color):
                            f"{c['side']:6}{float(e):>6.2f}{float(pk):>6.2f}{float(x):>6.2f}"
                            f"{float(pk/e) if e else 0:>5.1f}x{money(c['pnl'], color)}  "
                            f"{name.get(event_slug(c['slug']), '') or '?':<38.36}"
-                           f"{c['slug'][:34]}")
+                           f"{c['slug'][:34]}"
+                           + (paint("  $REAL", Y, color) if c.get("real") else ""))
 
             # Group by the entry rule each trade was taken under. The book
             # spans several, because they were changed mid-run; one blended
@@ -161,6 +162,27 @@ def render(args, color):
                 if live and live not in eras:
                     out.append(paint(f"    running now: {live} "
                                      "(no closed trades yet)", D, color))
+
+            # Real-money trades sit in the same book as paper - they are the
+            # same strategy - but their own tally is reported too, because the
+            # point of running them is to compare fills against paper.
+            real = [c for c in shown if c.get("real")]
+            if real:
+                rp = sum(Decimal(c["pnl"]) for c in real)
+                rs = sum(Decimal(c["entry_px"]) * c["qty"] for c in real)
+                rw = sum(1 for c in real if Decimal(c["pnl"]) > 0)
+                out.append(paint(
+                    f"\n  REAL MONEY: {len(real)} trade(s)  staked ${float(rs):.2f}  "
+                    f"pnl {float(rp):+.2f}  "
+                    f"ROI {float(rp / rs * 100) if rs else 0:.0f}%  {rw}W/{len(real)-rw}L",
+                    Y, color))
+                slip = [(c, Decimal(c["real_entry_px"]) - Decimal(c["entry_px"]))
+                        for c in real if c.get("real_entry_px")]
+                if slip:
+                    avg = sum(d for _, d in slip) / len(slip)
+                    out.append(paint(
+                        f"  entry slippage vs the paper price: {float(avg):+.4f} "
+                        f"on {len(slip)} fill(s)", D, color))
 
             staked = sum(Decimal(c["entry_px"]) * c["qty"] for c in shown)
             pnl = sum(Decimal(c["pnl"]) for c in shown)

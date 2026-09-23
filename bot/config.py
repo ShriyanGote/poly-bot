@@ -22,6 +22,17 @@ LONGSHOT_STATE = DATA / "longshot_state.json"
 LS_BAND_LO = Decimal("0.01")
 LS_BAND_HI = Decimal("0.05")
 LS_STAKE = Decimal("1.00")
+
+# --- REAL MONEY ----------------------------------------------------------
+# Off by default. Flip LS_REAL_ENABLED to True and restart to arm it; flip it
+# back and restart to stop. Every guard is checked independently before an
+# order is sent, and the trade counter in LS_REAL_STATE persists across
+# restarts so the cap cannot be reset by bouncing the process.
+LS_REAL_ENABLED = False
+LS_REAL_MAX_TRADES = 10             # hard cap on real ENTRIES, lifetime
+LS_REAL_MAX_SPEND = Decimal("12.00")  # hard cap on real dollars deployed
+LS_REAL_SPORTS = {"tennis"}         # nothing else goes real
+LS_REAL_STATE = DATA / "real_trades.json"
 LS_MAX_POSITIONS = 100
 # Take-profit multiples. Untimed sports get a HIGHER bar than timed (a
 # comeback there has no clock working against it) but not an infinite one:
