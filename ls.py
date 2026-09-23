@@ -237,9 +237,19 @@ def render(args, color):
                        f"  {name.get(event_slug(p['slug']), '') or '?':<38.36}"
                        f"{p['slug'][:34]}"
                        + ("" if p.get("opened", 0) >= config.LS_TRAIL_SINCE
-                          else paint(" *", D, color)))
+                          else paint(" *", D, color))
+                       + (paint(f"  $REAL {p.get('real_qty')}sh @ "
+                                f"{p.get('real_entry_px')}", Y, color)
+                          if p.get("real") else ""))
         out.append(paint("  armed = trail active; the number is the price that "
                          "triggers a sale", D, color))
+        live_real = [p for p in open_ if p.get("real")]
+        if live_real:
+            at_risk = sum(Decimal(str(x.get("real_qty") or 0))
+                          * Decimal(str(x.get("real_entry_px") or 0))
+                          for x in live_real)
+            out.append(paint(f"  $REAL = real money. {len(live_real)} open, "
+                             f"${float(at_risk):.2f} at risk", Y, color))
     return "\n".join(out)
 
 
