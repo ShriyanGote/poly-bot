@@ -114,6 +114,29 @@ class Broker:
         return (abs(float(e.get("netPosition") or 0)),
                 abs(float((e.get("cost") or {}).get("value") or 0)))
 
+    def last_fill_price(self, slug, side):
+        """Price of the most recent execution in this market, our side up.
+
+        On an exit the position's cost field falls to zero, so a price derived
+        from it is the cost basis, not the proceeds - a sale at 44c was being
+        recorded as 5c. The trade feed carries what actually happened.
+        """
+        try:
+            acts = (self.client.portfolio.activities() or {}).get("activities") or []
+        except Exception:
+            return None
+        for a in acts:
+            t = a.get("trade") or {}
+            ex = t.get("aggressorExecution") or {}
+            o = ex.get("order") or {}
+            if o.get("marketSlug") != slug:
+                continue
+            px = (ex.get("lastPx") or o.get("price") or {}).get("value")
+            if px is None:
+                continue
+            return self.venue_price(side, px)
+        return None
+
     def confirm(self, slug, before_qty, before_cost, tries=6, pause=0.5):
         """What actually changed at the venue after an order.
 
@@ -227,5 +250,14 @@ class Broker:
         if not got:
             self.log(f"REAL: exit unfilled {slug[:40]} at {float(price):.4f} - will retry")
             return 0, 0.0
+        # confirm() prices from the cost delta, which on a sale is the cost
+        # basis rather than the proceeds. Take the real trade price instead.
+        real_px = self.last_fill_price(slug, side)
+        if real_px is not None:
+            avg = real_px
+        else:
+            avg = float(price)
+            self.log(f"REAL: could not read the fill price for {slug[:40]}; "
+                     f"recording the limit {avg:.4f}")
         self.log(f"REAL SELL| {slug[:38]} {side} {got} @ {avg:.4f} = ${got*avg:.2f}")
         return got, avg

@@ -70,6 +70,7 @@ class Recorder:
         self._req_chunks: dict[str, list] = {}
         self.cap_dropped = 0
         self._last_liveness = 0.0
+        self._last_realguard = 0.0
         self._last_settle = 0.0
         # {slug: {"since": first queued, "next": earliest retry, "tries": n}}
         # Persisted: a market drops out of discovery exactly once, so a queue
@@ -467,6 +468,58 @@ class Recorder:
         self.last_msg = time.time()
         return placed
 
+    def _guard_real(self):
+        """Keep real positions managed even when their feed is quiet.
+
+        The websocket is the normal path, but a position holding actual money
+        cannot depend on it. Anything real that has not ticked recently is
+        priced over REST and run through the same exit logic, so a dark market
+        cannot strand an armed position below its stop.
+        """
+        ls = self.longshot
+        if not ls or not getattr(ls, "broker", None):
+            return
+        now = time.time()
+        stale = [(k, p) for k, p in list(ls.positions.items())
+                 if p.get("real")
+                 and now - float(p.get("last_seen") or 0) > config.REAL_GUARD_STALE]
+        for key, pos in stale:
+            slug = pos["slug"]
+            try:
+                md = self.client.markets.bbo(slug).get("marketData") or {}
+                bid = Decimal(str((md.get("bestBid") or {}).get("value") or 0))
+                ask = Decimal(str((md.get("bestAsk") or {}).get("value") or 0))
+            except Exception as e:
+                self.log(f"REAL GUARD: no quote for {slug[:40]} "
+                         f"({type(e).__name__}) - still holding")
+                continue
+            if bid <= 0 or ask <= 0:
+                continue
+            exit_px = bid if pos["side"] == "long" else Decimal("1") - ask
+            quiet = now - float(pos.get("last_seen") or 0)
+            self.log(f"REAL GUARD: {slug[:40]} quiet {quiet:.0f}s - pricing over "
+                     f"REST at {float(exit_px):.4f}")
+            ls._manage(key, pos, exit_px, pos.get("sport") or "tennis", now)
+
+    def _audit_real(self):
+        """Does anything at the venue lack a position here, or vice versa?"""
+        ls = self.longshot
+        if not ls or not getattr(ls, "broker", None):
+            return
+        held, _ = {}, None
+        try:
+            held = (self.client.portfolio.positions() or {}).get("positions") or {}
+        except Exception:
+            return
+        ours = {p["slug"] for p in ls.positions.values() if p.get("real")}
+        for slug, e in held.items():
+            if abs(float(e.get("netPosition") or 0)) > 0 and slug not in ours:
+                self.log(f"REAL AUDIT: venue holds {e.get('netPosition')} of "
+                         f"{slug[:40]} with no position here - NOT BEING MANAGED")
+        for slug in ours - set(held):
+            self.log(f"REAL AUDIT: we think we hold {slug[:40]} but the venue "
+                     f"shows nothing")
+
     async def _reconcile(self):
         """Verify that markets we believe we are subscribed to are ticking.
 
@@ -518,6 +571,7 @@ class Recorder:
                  f"| paper={'on' if self.paper else 'off'} "
                  f"| band {config.BAND_LO}-{config.BAND_HI}")
         backoff = 5
+        first_guard = True
         while True:
             try:
                 for c in self.conns:
@@ -533,6 +587,12 @@ class Recorder:
                 backoff = 5
                 # Resubscribe what we already know about right away; a fresh
                 # REST sweep takes ~3 minutes we do not want to lose.
+                # A real position may have gone past its stop while we were
+                # down. Price it now rather than waiting for a tick.
+                if first_guard and self.longshot and getattr(self.longshot, "broker", None):
+                    first_guard = False
+                    await asyncio.to_thread(self._audit_real)
+                    await asyncio.to_thread(self._guard_real)
                 known = list(self.meta)[:config.MAX_TOTAL_MARKETS]
                 if known:
                     n = await self._subscribe(known)
@@ -580,6 +640,12 @@ class Recorder:
                 self._last_reconcile = now
                 await self._reconcile()
                 self._prune_seen()
+
+            # Real money first: this runs before anything that might raise.
+            if (self.longshot and getattr(self.longshot, "broker", None)
+                    and now - self._last_realguard >= config.REAL_GUARD_INTERVAL):
+                self._last_realguard = now
+                await asyncio.to_thread(self._guard_real)
 
             if self.longshot:
                 self._drain_requests()

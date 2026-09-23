@@ -33,6 +33,12 @@ LS_REAL_MAX_TRADES = 10             # hard cap on real ENTRIES, lifetime
 LS_REAL_MAX_SPEND = Decimal("12.00")  # hard cap on real dollars deployed
 LS_REAL_SPORTS = {"tennis"}         # nothing else goes real
 LS_REAL_STATE = DATA / "real_trades.json"
+# A real position must never depend on the websocket alone. If one has not
+# ticked in this long, price it over REST and manage it anyway; a market that
+# goes dark while an armed position sits below its stop is real money lost to
+# a plumbing fault.
+REAL_GUARD_INTERVAL = 20           # how often the guard runs
+REAL_GUARD_STALE = 45              # a real position quiet this long gets polled
 LS_MAX_POSITIONS = 100
 # Take-profit multiples. Untimed sports get a HIGHER bar than timed (a
 # comeback there has no clock working against it) but not an infinite one:
