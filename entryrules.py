@@ -216,10 +216,28 @@ def main():
           + (f", entries after {a.since} UTC" if since else "") + "\n")
 
     mt = r.min_ticks
+    # Which entry the live rule actually uses, read from config rather than
+    # assumed. This was hardcoded to the bounce family, so when tennis moved
+    # back to first-touch the LIVE row kept replaying bounce under the
+    # first-touch label - it printed the bounce row's numbers exactly.
+    if r.dip_to is None:
+        live_kind = "first-touch"
+    elif hold:
+        live_kind = "hold"
+    else:
+        live_kind = "bounce"
     runs = [("first-touch (original)", "first-touch", 0),
             (f"bounce {float(dip):.2f}->{float(back):.2f}", "bounce", 0),
             ("first-touch + activity", "first-touch", mt or 100),
-            (f"{config.rule_label(a.sport)}  (LIVE)", "hold" if hold else "bounce", mt)]
+            (f"{config.rule_label(a.sport)}  (LIVE)", live_kind, mt)]
+    # If the live rule is identical to a row already listed, say so on that
+    # row instead of printing the same trades twice.
+    dupe = next((i for i, (_, k, m) in enumerate(runs[:3])
+                 if k == live_kind and m == mt), None)
+    if dupe is not None:
+        label, k, m = runs[dupe]
+        runs[dupe] = (f"{label}  (LIVE)", k, m)
+        runs = runs[:3]
     # Every row uses the LIVE exit, so the table isolates the entry rule
     # instead of comparing one rule's entry against another rule's exit.
     sett = settlements()
