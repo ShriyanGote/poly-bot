@@ -93,8 +93,13 @@ def render(args, color):
 
     out = []
     hdr = "CURRENT STRATEGY (trailing stop)" if trail_only else "ALL CLOSED TRADES (incl. old rules)"
-    out.append(paint(f"\n{hdr}   (arm {config.LS_TRAIL_ARM}x, "
-                     f"exit on {float(config.LS_TRAIL_DRAWDOWN)*100:.0f}% drawdown)", B, color))
+    if args.sport:
+        sr = config.rules_for(args.sport)
+        rule = (f"arm {float(sr.arm):g}x, exit on "
+                f"{float(sr.drawdown)*100:.0f}% drawdown")
+    else:
+        rule = "exit rules differ by sport - use --sport"
+    out.append(paint(f"\n{hdr}   ({rule})", B, color))
 
     if not args.open:
         if not shown:
@@ -195,8 +200,15 @@ def render(args, color):
             e = Decimal(p["entry_px"])
             pk = Decimal(p.get("peak_px", e))
             mult = pk / e if e else Decimal(0)
-            armed = "yes" if mult >= config.LS_TRAIL_ARM else ""
-            floor = f"{float(pk * (1 - config.LS_TRAIL_DRAWDOWN)):.2f}" if armed else "-"
+            # Each position pins the arm and drawdown it was opened under, so
+            # read those - not the globals. Using LS_TRAIL_* showed a position
+            # armed at 3.6x/25% when it was actually pinned to 5x/20%, i.e.
+            # reported a stop that did not exist at a price that was not real.
+            sr = config.rules_for(p.get("sport"))
+            arm = Decimal(str(p.get("arm") or sr.arm))
+            draw = Decimal(str(p.get("drawdown") or sr.drawdown))
+            armed = "yes" if mult >= arm else ""
+            floor = f"{float(pk * (1 - draw)):.2f}" if armed else "-"
             out.append(f"  {p['sport']:10}{p.get('league','?')[:11]:12}{p['side']:6}"
                        f"{float(e):>6.2f}{float(pk):>6.2f}{float(mult):>5.1f}x"
                        f"{paint(f'{floor:>7}', Y, color) if armed else f'{floor:>7}'}"
