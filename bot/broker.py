@@ -70,14 +70,27 @@ class Broker:
             return "ORDER_INTENT_BUY_LONG" if opening else "ORDER_INTENT_SELL_LONG"
         return "ORDER_INTENT_BUY_SHORT" if opening else "ORDER_INTENT_SELL_SHORT"
 
+    @staticmethod
+    def venue_price(side, price):
+        """Our price for a side, expressed the way the venue prices the order.
+
+        The venue quotes one book: the LONG outcome. A short is transacted as
+        an order on that book, so its limit has to be in long terms. Being
+        short at 0.05 means selling the long at 0.95; sending 0.05 as the limit
+        says "sell for as little as five cents", which is no protection at all
+        and in a thin book fills at a ruinous price.
+        """
+        return float(price) if side == "long" else 1.0 - float(price)
+
     def _order(self, slug, side, qty, price, opening, preview=False):
         """One limit IOC order. Limit, not market: at 5c a market order can
         walk the book several ticks, which is most of the edge."""
+        limit = self.venue_price(side, price)
         req = {
             "marketSlug": slug,
             "intent": self._intent(side, opening),
             "type": "ORDER_TYPE_LIMIT",
-            "price": {"value": f"{float(price):.4f}"},
+            "price": {"value": f"{limit:.4f}"},
             "quantity": int(qty),
             "tif": "TIME_IN_FORCE_IMMEDIATE_OR_CANCEL",
             "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_AUTOMATIC",
@@ -86,16 +99,20 @@ class Broker:
             return self.client.orders.preview({"request": req})
         return self.client.orders.create(req)
 
-    @staticmethod
-    def filled(resp):
-        """(shares, average price) actually executed."""
+    @classmethod
+    def filled(cls, resp, side="long"):
+        """(shares, average price) actually executed, in OUR side's terms.
+
+        Executions report the long-outcome price, so a short fill comes back
+        as 0.95 when what we paid was 0.05.
+        """
         ex = (resp or {}).get("executions") or []
         got = 0
         cash = 0.0
         for e in ex:
             if e.get("type") in ("EXECUTION_TYPE_FILL", "EXECUTION_TYPE_PARTIAL_FILL"):
                 n = int(float(e.get("lastShares") or 0))
-                px = float((e.get("lastPx") or {}).get("value") or 0)
+                px = cls.venue_price(side, (e.get("lastPx") or {}).get("value") or 0)
                 got += n
                 cash += n * px
         return got, (cash / got if got else 0.0)
@@ -122,7 +139,7 @@ class Broker:
             self.state["spent"] = round(self.state["spent"] - float(stake), 4)
             self._save()
             return None
-        got, avg = self.filled(resp)
+        got, avg = self.filled(resp, side)
         if not got:
             self.log(f"REAL: entry unfilled {slug[:40]} (IOC, no liquidity at {float(price):.4f})")
             self.state["entries"] -= 1
@@ -153,7 +170,7 @@ class Broker:
             self.log(f"REAL: EXIT FAILED {slug[:40]} {type(e).__name__}: {str(e)[:120]}"
                      f"  - position still held, will retry")
             return 0, 0.0
-        got, avg = self.filled(resp)
+        got, avg = self.filled(resp, side)
         if not got:
             self.log(f"REAL: exit unfilled {slug[:40]} at {float(price):.4f} - will retry")
             return 0, 0.0
