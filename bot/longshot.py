@@ -58,9 +58,10 @@ class Longshot:
                 self.log(f"REAL MONEY ARMED: {left} trades / ${cash:.2f} remaining "
                          f"| sports {sorted(config.LS_REAL_SPORTS)}")
             else:
-                n = sum(1 for p in self.positions.values() if p.get("real"))
-                self.log(f"REAL MONEY: new entries OFF. Managing {n} open real "
-                         f"position(s) to exit; new trades are paper.")
+                # No position count here: state has not been loaded yet at
+                # construction time, and reading self.positions crashed startup.
+                self.log("REAL MONEY: new entries OFF. Open real positions are "
+                         "still managed to exit; new trades are paper.")
         self.positions: dict[str, dict] = {}
         self.closed: list[dict] = []
         self.peak: dict[str, str] = {}
