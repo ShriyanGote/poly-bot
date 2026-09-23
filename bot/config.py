@@ -28,7 +28,7 @@ LS_STAKE = Decimal("1.00")
 # back and restart to stop. Every guard is checked independently before an
 # order is sent, and the trade counter in LS_REAL_STATE persists across
 # restarts so the cap cannot be reset by bouncing the process.
-LS_REAL_ENABLED = False
+LS_REAL_ENABLED = True
 LS_REAL_MAX_TRADES = 10             # hard cap on real ENTRIES, lifetime
 LS_REAL_MAX_SPEND = Decimal("12.00")  # hard cap on real dollars deployed
 LS_REAL_SPORTS = {"tennis"}         # nothing else goes real

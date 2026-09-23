@@ -99,6 +99,42 @@ class Broker:
             return self.client.orders.preview({"request": req})
         return self.client.orders.create(req)
 
+    def net_position(self, slug):
+        """Shares the venue says we hold, and what they cost. (None, None) if
+        the lookup fails - unknown is not the same as zero."""
+        try:
+            book = (self.client.portfolio.positions() or {}).get("positions") or {}
+        except Exception as e:
+            self.log(f"REAL: position lookup failed for {slug[:40]}: "
+                     f"{type(e).__name__}: {str(e)[:90]}")
+            return None, None
+        e = book.get(slug)
+        if not e:
+            return 0, 0.0
+        return (abs(float(e.get("netPosition") or 0)),
+                abs(float((e.get("cost") or {}).get("value") or 0)))
+
+    def confirm(self, slug, before_qty, before_cost, tries=6, pause=0.5):
+        """What actually changed at the venue after an order.
+
+        The order response is not the truth. orders.create() came back with no
+        executions on an order that filled a moment later, and reading that as
+        "unfilled" left a real position nobody was managing. The position book
+        is the truth, so ask it, and give the fill a moment to appear.
+        """
+        for i in range(tries):
+            time.sleep(pause)
+            qty, cost = self.net_position(slug)
+            if qty is None:
+                continue
+            if before_qty is None:
+                before_qty, before_cost = 0, 0.0
+            if qty != before_qty:
+                d = qty - before_qty
+                dc = cost - before_cost
+                return abs(d), (abs(dc / d) if d else 0.0)
+        return 0, 0.0
+
     @classmethod
     def filled(cls, resp, side="long"):
         """(shares, average price) actually executed, in OUR side's terms.
@@ -123,6 +159,7 @@ class Broker:
         stop = self.why_not(sport, slug, stake, open_real_slugs)
         if stop:
             return None
+        before_qty, before_cost = self.net_position(slug)
         # Reserve the slot first: dying after this costs a slot, not a double spend.
         self.state["entries"] += 1
         self.state["spent"] = round(self.state["spent"] + float(stake), 4)
@@ -139,9 +176,17 @@ class Broker:
             self.state["spent"] = round(self.state["spent"] - float(stake), 4)
             self._save()
             return None
-        got, avg = self.filled(resp, side)
+        got, avg = self.confirm(slug, before_qty, before_cost)
         if not got:
-            self.log(f"REAL: entry unfilled {slug[:40]} (IOC, no liquidity at {float(price):.4f})")
+            # Only release the slot when the venue positively shows nothing was
+            # bought. An unreadable position book leaves it consumed.
+            now_qty, _ = self.net_position(slug)
+            if now_qty is None:
+                self.log(f"REAL: CANNOT CONFIRM {slug[:40]} - position book "
+                         f"unreadable. Slot kept; CHECK THIS MARKET BY HAND.")
+                return None
+            self.log(f"REAL: entry unfilled {slug[:40]} "
+                     f"(IOC, nothing at {float(price):.4f})")
             self.state["entries"] -= 1
             self.state["spent"] = round(self.state["spent"] - float(stake), 4)
             self._save()
@@ -161,16 +206,24 @@ class Broker:
     def close_real(self, pos, price):
         """Sell a real position. Returns (shares, avg px) or (0, 0)."""
         slug, side = pos["slug"], pos["side"]
-        qty = int(pos.get("real_qty") or 0)
-        if qty <= 0:
+        held, held_cost = self.net_position(slug)
+        if held is None:
+            self.log(f"REAL: cannot read position for {slug[:40]} - not selling, "
+                     f"will retry")
             return 0, 0.0
+        if held <= 0:
+            self.log(f"REAL: venue shows no position in {slug[:40]}; "
+                     f"treating as already closed")
+            return int(pos.get("real_qty") or 0), float(price)
+        # Sell what we actually hold, not what our records think we hold.
+        qty = int(held)
         try:
             resp = self._order(slug, side, qty, price, opening=False)
         except Exception as e:
             self.log(f"REAL: EXIT FAILED {slug[:40]} {type(e).__name__}: {str(e)[:120]}"
                      f"  - position still held, will retry")
             return 0, 0.0
-        got, avg = self.filled(resp, side)
+        got, avg = self.confirm(slug, held, held_cost)
         if not got:
             self.log(f"REAL: exit unfilled {slug[:40]} at {float(price):.4f} - will retry")
             return 0, 0.0
