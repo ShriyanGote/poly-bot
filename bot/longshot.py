@@ -54,8 +54,13 @@ class Longshot:
             from .broker import Broker
             self.broker = Broker(client, log)
             left, cash = self.broker.remaining()
-            self.log(f"REAL MONEY ARMED: {left} trades / ${cash:.2f} remaining "
-                     f"| sports {sorted(config.LS_REAL_SPORTS)}")
+            if getattr(config, "LS_REAL_NEW_ENTRIES", False):
+                self.log(f"REAL MONEY ARMED: {left} trades / ${cash:.2f} remaining "
+                         f"| sports {sorted(config.LS_REAL_SPORTS)}")
+            else:
+                n = sum(1 for p in self.positions.values() if p.get("real"))
+                self.log(f"REAL MONEY: new entries OFF. Managing {n} open real "
+                         f"position(s) to exit; new trades are paper.")
         self.positions: dict[str, dict] = {}
         self.closed: list[dict] = []
         self.peak: dict[str, str] = {}

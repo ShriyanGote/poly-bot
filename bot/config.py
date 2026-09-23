@@ -28,7 +28,15 @@ LS_STAKE = Decimal("1.00")
 # back and restart to stop. Every guard is checked independently before an
 # order is sent, and the trade counter in LS_REAL_STATE persists across
 # restarts so the cap cannot be reset by bouncing the process.
+# Two switches, because they are different decisions. LS_REAL_ENABLED keeps
+# the broker alive so positions holding real money are still sold by the
+# normal exit logic. LS_REAL_NEW_ENTRIES governs whether new real BUYS may
+# happen. Turning entries off while leaving the broker on is how you stop
+# opening real risk without abandoning what is already open - switching the
+# broker off instead would close paper records while the shares were still
+# held, losing track of real money.
 LS_REAL_ENABLED = True
+LS_REAL_NEW_ENTRIES = False
 LS_REAL_MAX_TRADES = 10             # hard cap on real ENTRIES, lifetime
 LS_REAL_MAX_SPEND = Decimal("12.00")  # hard cap on real dollars deployed
 LS_REAL_SPORTS = {"tennis"}         # nothing else goes real

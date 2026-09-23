@@ -47,6 +47,8 @@ class Broker:
         """Reason this trade may NOT go real, or None if every guard passes."""
         if not config.LS_REAL_ENABLED:
             return "real trading disabled"
+        if not getattr(config, "LS_REAL_NEW_ENTRIES", False):
+            return "new real entries are off (exits still run)"
         if sport not in config.LS_REAL_SPORTS:
             return f"{sport} not in the real allowlist"
         if self.state["entries"] >= config.LS_REAL_MAX_TRADES:
