@@ -80,7 +80,12 @@ LS_TRAIL_SINCE = 1790010000.0      # 2026-09-21 17:00:00 UTC
 # under every arm/drawdown combination tried (best case -23%). Setka Cup table
 # tennis was 18 of 27 trades and dominated the losses.
 # Everything is still RECORDED; this only limits what we buy.
-LS_SPORTS = {"tennis", "esports", "baseball", "football"}
+LS_SPORTS: set = set()
+# COLLECTION MODE: nothing is paper-traded. Everything is still recorded -
+# the full book to the tape, and every in-band candidate to the signal
+# ledger with the reason it was skipped - so no information is lost and
+# any rule can be replayed against it later. Put sports back in this set
+# to resume paper trading.
 # Study set. cfb already maps to football via sport_of(), so college and
 # pro are one sport here. Basketball, soccer and cricket are still
 # RECORDED - the recorder subscribes to every live series regardless -
