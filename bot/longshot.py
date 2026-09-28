@@ -15,12 +15,14 @@ see, so winners are not mis-measured when a market leaves our subscription.
 """
 
 import json
+import math
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 from decimal import Decimal
 
 from . import config
+from .signal_ledger import SignalLedger
 
 UNTIMED = {"tennis", "baseball", "cricket", "darts", "esports", "pickleball"}
 TIMED = {"football", "basketball", "soccer", "hockey", "lacrosse"}
@@ -81,12 +83,16 @@ class Longshot:
         # Recent book-update times per market, for the activity gate. Bounded
         # by the window, so it cannot grow with runtime.
         self.recent: dict[str, deque] = defaultdict(deque)
+        # Rolling book-mid history for the frozen 120s volatility shadow
+        # filter. Keep only the recent window per market.
+        self.shadow_prices: dict[str, deque] = defaultdict(deque)
         self.skipped_prop: set[str] = set()
         self.skipped_quiet: set[str] = set()
         # State is what ./ls.py reads. Saving only on the 180s discovery sweep
         # meant a sale showed in the log seconds after it happened but took
         # minutes to appear in the viewer.
         self.dirty = False
+        self.signals = SignalLedger(config.LS_SIGNAL_DB)
         self._load()
 
     def _prune_dipped(self, now):
@@ -161,8 +167,12 @@ class Longshot:
         }, indent=2, default=str))
         tmp.replace(config.LONGSHOT_STATE)
 
+    def close(self):
+        self.signals.close()
+
     # --- trading -------------------------------------------------------------
-    def on_book(self, slug, league, bid, ask, tick=None, period=None, score=None):
+    def on_book(self, slug, league, bid, ask, tick=None, period=None, score=None,
+                book=None):
         if not league or league == "?":
             league = league_from_slug(slug)
         sport = config.sport_of(league)
@@ -171,34 +181,84 @@ class Longshot:
         # Existing positions are always managed; only NEW entries are gated by
         # sport, so nothing already open gets stranded.
         busy = self._busy(slug, now)
+        mid = (bid + ask) / 2
+        history = self.shadow_prices[slug]
+        history.append((now, float(mid)))
+        while history and now - history[0][0] > 120:
+            history.popleft()
+        vol120 = None
+        if len(history) >= 3:
+            vals = [v for _, v in history]
+            avg = sum(vals) / len(vals)
+            vol120 = math.sqrt(sum((v - avg) ** 2 for v in vals) / len(vals))
         can_open = (config.LS_SPORTS is None or sport in config.LS_SPORTS)
+        gate_reason = "" if can_open else "sport_not_allowed"
         if can_open and config.LS_MONEYLINE_ONLY and market_kind(slug) != "moneyline":
             can_open = False
+            gate_reason = "non_moneyline"
             self.skipped_prop.add(slug)
+
         if (can_open and self._live is not None
                 and now - self._live_at > config.LIVENESS_MAX_AGE):
             # We cannot see which games are running. Opening on a stale
             # picture is how a finished match gets bought.
             can_open = False
+            gate_reason = "stale_liveness"
             self.skipped_stale.add(slug)
         if can_open and self._live is not None and slug not in self._live:
             # Open positions here are still managed below; only new ones stop.
             can_open = False
+            gate_reason = "market_not_live"
             self.skipped_dead.add(slug)
         if can_open and config.LS_SKIP_TIEBREAK and config.is_tiebreak(period):
             can_open = False
+            gate_reason = "tiebreak"
             self.skipped_tiebreak.add(slug)
         if can_open and period is not None and not config.is_live(period):
             # Discovery records games whose state it cannot read, so that the
             # tape is complete. We do not bet on them: a blank period is how a
             # finished match looks, and we cannot tell those apart.
             can_open = False
+            gate_reason = "unknown_or_nonlive_period"
             self.skipped_unknown.add(slug)
+
+        bids = (book or {}).get("bids") or []
+        offers = (book or {}).get("offers") or []
+        bid_total = (book or {}).get("bid_total", 0)
+        ask_total = (book or {}).get("ask_total", 0)
+        bid_depth = bids[0].get("qty", 0) if bids else 0
+        ask_depth = offers[0].get("qty", 0) if offers else 0
+        spread = ask - bid
+        long_exit, short_exit = bid, Decimal("1") - ask
+        self.signals.update_peak(slug, long_exit, short_exit)
 
         for side, price, exit_px in (("long", ask, bid),
                                      ("short", Decimal("1") - bid, Decimal("1") - ask)):
             key = f"{slug}|{side}"
             pos = self.positions.get(key)
+
+            r = config.rules_for(sport)
+            in_candidate_band = r.band_lo <= price <= r.band_hi
+            sid = None
+            if in_candidate_band:
+                reason = gate_reason
+                status = "skipped" if reason else "pending"
+                if not reason:
+                    reason = "entry_rule_not_ready"
+                sid = self.signals.observe(
+                    slug=slug, league=league, sport=sport, side=side,
+                    rule=config.rule_label(sport), price=price, exit_px=exit_px,
+                    bid=bid, ask=ask, spread=spread,
+                    entry_depth=ask_depth if side == "long" else bid_depth,
+                    bid_total=bid_total, ask_total=ask_total, activity=busy,
+                    period=period, score=score, status=status, reason=reason)
+                if sport == "tennis" and market_kind(slug) == "moneyline":
+                    self.signals.observe_shadow(
+                        slug=slug, league=league, side=side, price=price,
+                        bid=bid, ask=ask, spread=spread,
+                        entry_depth=ask_depth if side == "long" else bid_depth,
+                        bid_total=bid_total, ask_total=ask_total, activity=busy,
+                        period=period, score=score, vol120=vol120)
 
             if pos is not None:
                 self._manage(key, pos, exit_px, sport, now)
@@ -207,8 +267,8 @@ class Longshot:
             if not can_open:
                 continue
             if key in self.peak:          # already traded this side once
+                self.signals.mark_reason(sid, "skipped", "already_traded_side")
                 continue
-            r = config.rules_for(sport)
             band_lo, band_hi, arm, draw = r.band_lo, r.band_hi, r.arm, r.drawdown
             if r.dip_to is not None:
                 # Wait for a recovery that holds. The price must trade down to
@@ -218,11 +278,14 @@ class Longshot:
                 st = self.dipped.get(key)
                 if band_lo <= price <= r.dip_to:
                     self.dipped[key] = {"dip": now, "up": None}
+                    self.signals.mark_reason(sid, "skipped", "waiting_for_bounce")
                     continue
                 if not isinstance(st, dict) or now - st["dip"] > config.LS_DIP_TTL:
+                    self.signals.mark_reason(sid, "skipped", "no_recent_dip")
                     continue
                 if price < r.buy_back:
                     st["up"] = None               # fell back; restart the clock
+                    self.signals.mark_reason(sid, "skipped", "below_buyback")
                     continue
                 if r.hold_secs:
                     # Only wait when a hold is configured. With hold_secs 0
@@ -231,23 +294,29 @@ class Longshot:
                     # not match what the backtest simulated.
                     if st.get("up") is None:
                         st["up"] = now
+                        self.signals.mark_reason(sid, "skipped", "waiting_for_hold")
                         continue
                     if now - st["up"] < r.hold_secs:
+                        self.signals.mark_reason(sid, "skipped", "waiting_for_hold")
                         continue
             if r.min_ticks and busy < r.min_ticks:
                 # A book this quiet does not produce runs: 9-11% ever double
                 # against 27% for a busy one.
                 self.skipped_quiet.add(slug)
+                self.signals.mark_reason(sid, "skipped", "quiet_activity")
                 continue
             if not (band_lo <= price <= band_hi):
                 continue
             if exit_px <= 0:              # no bid to ever sell into
+                self.signals.mark_reason(sid, "skipped", "no_executable_exit_quote")
                 continue
             if len(self.positions) >= config.LS_MAX_POSITIONS:
+                self.signals.mark_reason(sid, "skipped", "position_limit")
                 continue
 
             qty = int(config.LS_STAKE / price) if price > 0 else 0
             if qty <= 0:
+                self.signals.mark_reason(sid, "skipped", "zero_quantity")
                 continue
             self.positions[key] = {
                 "slug": slug, "side": side, "league": league, "sport": sport,
@@ -274,6 +343,7 @@ class Longshot:
                 if got:
                     self.positions[key].update(got)
             self.peak[key] = str(price)
+            self.signals.mark_entered(sid, price, now)
             self.dipped.pop(key, None)
             self._prune_dipped(now)
             self.dirty = True

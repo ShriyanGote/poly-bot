@@ -206,7 +206,9 @@ class Recorder:
         if self.longshot:
             try:
                 self.longshot.on_book(slug, league, bid, ask, tick, period,
-                                      self.disc.scores.get(event))
+                                      self.disc.scores.get(event),
+                                      book={"bids": bids, "offers": offers,
+                                            "bid_total": bt, "ask_total": at})
             except Exception as e:
                 self.log(f"longshot error: {type(e).__name__} {str(e)[:80]}")
 
@@ -261,13 +263,15 @@ class Recorder:
         for event in list(self.disc.ended):
             self._queue_settle(f"aec-{event}", time.time())
             self.disc.ended.discard(event)
-        if not self._pending_settle:
-            return
         path = config.SETTLEMENTS
         try:
             have = json.loads(path.read_text()) if path.exists() else {}
         except ValueError:
             have = {}
+        if self.longshot:
+            self.longshot.signals.update_settlements(have)
+        if not self._pending_settle:
+            return
         now = time.time()
         done = 0
         wrote = False
@@ -796,6 +800,8 @@ class Recorder:
                 top = sorted(self.paper.rejects.items(), key=lambda x: -x[1])[:5]
                 self.log("gate rejections: " + ", ".join(f"{k} x{v}" for k, v in top))
         self._dump_scorecard()
+        if self.longshot:
+            self.longshot.close()
         self.store.close()
         self.log(f"stopped | books {self.msgs} | trades {self.trades} | "
                  f"rows {self.store.written} | excursions {self.exc.events}")

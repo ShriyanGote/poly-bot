@@ -15,6 +15,7 @@ LOGS.mkdir(exist_ok=True)
 
 STATE_FILE = DATA / "paper_state.json"
 LONGSHOT_STATE = DATA / "longshot_state.json"
+LS_SIGNAL_DB = DATA / "longshot_signals.sqlite3"
 
 # --- longshot convexity engine ------------------------------------------------
 # Buy cheap and hold: loss is capped at the premium paid, so there is no stop to
@@ -79,7 +80,7 @@ LS_TRAIL_SINCE = 1790010000.0      # 2026-09-21 17:00:00 UTC
 # under every arm/drawdown combination tried (best case -23%). Setka Cup table
 # tennis was 18 of 27 trades and dominated the losses.
 # Everything is still RECORDED; this only limits what we buy.
-LS_SPORTS = {"tennis", "football"}
+LS_SPORTS = {"tennis"}   # tennis only: football is 13 trades at -73% and out of season
 
 # Per-sport rules. Anything a sport does not override falls back to the
 # LS_BAND_*/LS_TRAIL_* values below, so tennis behaves exactly as before.

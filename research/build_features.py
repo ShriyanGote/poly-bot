@@ -32,11 +32,13 @@ def load(SPORT):
             ts = datetime.fromisoformat(r["ts"]).timestamp()
             bid, ask = float(r["bid"]), float(r["ask"])
             bt, at = float(r["bid_total"] or 0), float(r["ask_total"] or 0)
+            bd, ad = float(r["bid_depth"] or 0), float(r["ask_depth"] or 0)
         except Exception:
             continue
         if bid <= 0 or ask <= 0 or ask <= bid:
             continue
-        books[r["market"]].append((ts, bid, ask, bt, at, r.get("period", "")))
+        books[r["market"]].append((ts, bid, ask, bt, at, bd, ad,
+                                    r.get("period", "")))
         meta[r["market"]] = r.get("event", "?")
 
     flows = defaultdict(list)
@@ -59,7 +61,7 @@ def load(SPORT):
     return books, flows, meta
 
 
-def build(SPORT):
+def build(SPORT, output=None):
     books, flows, meta = load(SPORT)
     rows = []
     for market, bars in books.items():
@@ -71,7 +73,7 @@ def build(SPORT):
         fts = [x[0] for x in f]
 
         for i in range(100, len(bars) - 1, SAMPLE_EVERY):
-            ts, bid, ask, bt, at, period = bars[i]
+            ts, bid, ask, bt, at, bd, ad, period = bars[i]
             mid = (bid + ask) / 2
             spread = ask - bid
             if mid <= 0.02 or mid >= 0.98:
@@ -80,7 +82,8 @@ def build(SPORT):
             rec = {"market": market, "game": game, "ts": ts, "mid": mid,
                    "spread": spread, "period": period,
                    "book_imb": (bt - at) / (bt + at) if (bt + at) else 0.0,
-                   "depth": bt + at}
+                   "depth": bt + at, "bid_depth": bd,
+                   "ask_depth": ad}
 
             # trade-flow features over several lookbacks
             for w in FLOW_WINDOWS:
@@ -113,17 +116,22 @@ def build(SPORT):
                     break
                 fwd = (bars[k][1] + bars[k][2]) / 2
                 rec[f"fwd_{h}"] = fwd - mid
+                rec[f"fwd_spread_{h}"] = bars[k][2] - bars[k][1]
             if not ok:
                 continue
             rows.append(rec)
 
     df = pd.DataFrame(rows)
-    out = Path(__file__).resolve().parent / f"{SPORT}_features.parquet"
-    try:
-        df.to_parquet(out)
-    except Exception:
-        out = out.with_suffix(".csv")
+    out = (Path(output) if output else
+           Path(__file__).resolve().parent / f"{SPORT}_features.parquet")
+    if out.suffix.lower() == ".csv":
         df.to_csv(out, index=False)
+    else:
+        try:
+            df.to_parquet(out)
+        except Exception:
+            out = out.with_suffix(".csv")
+            df.to_csv(out, index=False)
     print(f"rows: {len(df):,}")
     print(f"markets: {df['market'].nunique()}   games: {df['game'].nunique()}")
     print(f"saved -> {out.name}")
@@ -134,4 +142,7 @@ if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--sport", default="football")
-    build(ap.parse_args().sport)
+    ap.add_argument("--output", type=Path,
+                    help="feature file path (defaults to <sport>_features.parquet)")
+    args = ap.parse_args()
+    build(args.sport, args.output)

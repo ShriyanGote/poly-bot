@@ -23,6 +23,18 @@ longshot-scalp strategy against them. **No real orders are ever placed.**
 
 Data lands in `data/tape-YYYY-MM-DD.csv.gz`, logs in `logs/`.
 
+## Tennis shadow experiment
+
+The paper-only shadow ledger records the first eligible 1-5c moneyline quote
+for each tennis market/side, including price, spread, displayed depth, recent
+activity, score, period, and rolling 120-second mid-price volatility. It
+simulates a fixed 5x arm / 20% trailing exit and tracks the eventual peak and
+settlement. It never submits orders. The volatility cutoff and exploratory
+league exclusions are frozen in `research/shadow_report.py`; run
+`.venv/bin/python research/shadow_report.py` for overall and daily results.
+Rankings and tournament round are not currently present in the recorder's
+signal metadata, so they cannot be tested from this ledger.
+
 ## Why the entry band is 0.05-0.35, not 0.01-0.05
 
 The tick is a fixed 1 cent, so one tick of spread costs `0.01/price` of your
