@@ -15,6 +15,11 @@ LOGS.mkdir(exist_ok=True)
 
 STATE_FILE = DATA / "paper_state.json"
 LONGSHOT_STATE = DATA / "longshot_state.json"
+STATUS_FILE = DATA / "status.json"   # published for the status page
+# The status page treats a stale file as "the recorder is stuck", so the
+# file has to be written far more often than the 180s heartbeat or a slow
+# sweep looks like a failure. Writing it costs nothing - no API calls.
+STATUS_INTERVAL = 20
 LS_SIGNAL_DB = DATA / "longshot_signals.sqlite3"
 
 # --- longshot convexity engine ------------------------------------------------

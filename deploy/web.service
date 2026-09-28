@@ -1,0 +1,16 @@
+[Unit]
+Description=Polymarket status page
+After=network-online.target
+
+[Service]
+Type=simple
+User=poly
+WorkingDirectory=/home/poly/Polymarket/deploy/web
+# Read-only static serving. status.json is symlinked in from data/, which the
+# recorder rewrites atomically each heartbeat.
+ExecStart=/usr/bin/python3 -m http.server 8080 --bind 0.0.0.0
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

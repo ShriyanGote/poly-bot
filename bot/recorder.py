@@ -3,6 +3,7 @@
 import asyncio
 import csv
 import json
+import shutil
 import os
 import re
 import time
@@ -71,6 +72,7 @@ class Recorder:
         self.cap_dropped = 0
         self._last_liveness = 0.0
         self._last_realguard = 0.0
+        self._last_status = 0.0
         self._last_settle = 0.0
         # {slug: {"since": first queued, "next": earliest retry, "tries": n}}
         # Persisted: a market drops out of discovery exactly once, so a queue
@@ -651,6 +653,10 @@ class Recorder:
                 self._last_realguard = now
                 await asyncio.to_thread(self._guard_real)
 
+            if now - self._last_status >= config.STATUS_INTERVAL:
+                self._last_status = now
+                self._write_status()
+
             if self.longshot:
                 self._drain_requests()
 
@@ -748,7 +754,73 @@ class Recorder:
                 self.longshot.save()
             await asyncio.sleep(2)
 
+    def _write_status(self):
+        """Publish a machine-readable snapshot for the status page.
+
+        Everything here is already computed for the heartbeat line; this just
+        writes it somewhere a browser can read, plus the per-sport market
+        breakdown that answers the actual question - are we capturing every
+        game for this sport right now.
+        """
+        by_sport = {}
+        for slug in self.subscribed:
+            league, event, period, _tick = self.meta.get(
+                slug, ("?", "?", "?", None))
+            sport = config.sport_of(league)
+            d = by_sport.setdefault(sport, {"markets": 0, "events": set(),
+                                            "leagues": {}, "sample": []})
+            d["markets"] += 1
+            if event and event != "?":
+                d["events"].add(event)
+            d["leagues"][league] = d["leagues"].get(league, 0) + 1
+            if len(d["sample"]) < 40:
+                d["sample"].append({"slug": slug, "event": event,
+                                    "title": self.disc.titles.get(event, ""),
+                                    "period": period,
+                                    "score": self.disc.scores.get(event, "")})
+        sports = {}
+        for sp, d in sorted(by_sport.items()):
+            sports[sp] = {"markets": d["markets"], "events": len(d["events"]),
+                          "leagues": dict(sorted(d["leagues"].items(),
+                                                 key=lambda kv: -kv[1])),
+                          "sample": d["sample"]}
+        try:
+            usage = shutil.disk_usage(config.DATA)
+            disk = {"free_gb": round(usage.free / 1e9, 1),
+                    "total_gb": round(usage.total / 1e9, 1)}
+            tape_gb = round(sum(f.stat().st_size
+                                for f in config.DATA.glob("*.gz")) / 1e9, 2)
+        except OSError:
+            disk, tape_gb = {}, None
+        status = {
+            "generated": datetime.now(timezone.utc).isoformat(),
+            "started": self.started.isoformat(),
+            "uptime_hours": round(
+                (datetime.now(timezone.utc) - self.started).total_seconds()/3600, 2),
+            "subscribed": len(self.subscribed),
+            "connections": len(self.conns),
+            "book_updates": self.msgs,
+            "trades": self.trades,
+            "rows_written": self.store.written,
+            "rows_deduped": self.store.skipped,
+            "quiet_seconds": round(time.time() - self.last_msg, 1),
+            "dead_connections": self.stale_conns,
+            "dark_recovered": self.dark_found,
+            "rate_limit_hits": self.disc.rate_limit_hits,
+            "settle_queue": self.settle_queue[0],
+            "disk": disk,
+            "tape_gb": tape_gb,
+            "sports": sports,
+        }
+        try:
+            tmp = config.STATUS_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(status, indent=1))
+            tmp.replace(config.STATUS_FILE)
+        except OSError as e:
+            self.log(f"could not write status: {e}")
+
     def _heartbeat(self):
+        self._write_status()
         hrs = (datetime.now(timezone.utc) - self.started).total_seconds() / 3600
         parts = [f"up {hrs:.1f}h", f"{len(self.subscribed)} mkts/{len(self.conns)}conn",
                  f"books {self.msgs}", f"trades {self.trades}",

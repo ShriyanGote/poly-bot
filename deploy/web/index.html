@@ -1,0 +1,139 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Recorder</title>
+<style>
+  :root{color-scheme:light dark;
+    --bg:#fbfbfa; --fg:#1a1a18; --dim:#6b6b66; --line:#e4e4df; --card:#fff;
+    --ok:#1a7f4b; --warn:#b4690e; --bad:#b42318;}
+  @media (prefers-color-scheme:dark){:root{
+    --bg:#16161a; --fg:#ececee; --dim:#9a9aa2; --line:#2c2c33; --card:#1d1d22;}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font:14px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif;
+    padding:24px 16px 48px}
+  .wrap{max-width:960px;margin:0 auto}
+  h1{font-size:20px;margin:0 0 2px;letter-spacing:-.01em}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:20px}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;
+    vertical-align:1px}
+  .row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+    gap:10px;margin-bottom:22px}
+  .tile{background:var(--card);border:1px solid var(--line);border-radius:9px;
+    padding:11px 13px}
+  .tile .k{color:var(--dim);font-size:11px;text-transform:uppercase;
+    letter-spacing:.05em}
+  .tile .v{font-size:21px;font-variant-numeric:tabular-nums;margin-top:3px;
+    letter-spacing:-.02em}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);
+    margin:26px 0 9px;font-weight:600}
+  table{width:100%;border-collapse:collapse;background:var(--card);
+    border:1px solid var(--line);border-radius:9px;overflow:hidden}
+  th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);
+    font-variant-numeric:tabular-nums}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--dim);
+    font-weight:600}
+  tr:last-child td{border-bottom:0}
+  td.n{text-align:right}
+  details{margin-top:7px}
+  summary{cursor:pointer;color:var(--dim);font-size:12px;padding:3px 0}
+  .games{margin-top:7px;border:1px solid var(--line);border-radius:8px;
+    overflow-x:auto}
+  .games table{border:0;border-radius:0;min-width:520px}
+  .muted{color:var(--dim)}
+  .err{color:var(--bad)}
+  footer{margin-top:28px;color:var(--dim);font-size:12px}
+  code{background:var(--card);border:1px solid var(--line);border-radius:4px;
+    padding:1px 5px;font-size:12px}
+</style>
+<div class="wrap">
+  <h1 id="title">Recorder</h1>
+  <div class="sub" id="sub">loading…</div>
+  <div class="row" id="tiles"></div>
+  <h2>Sports being captured</h2>
+  <div id="sports"></div>
+  <footer>
+    Refreshes every 15s. A sport appears here only while at least one of its
+    markets is subscribed, so an empty list means no games are live right now —
+    not that we are missing them. Cross-check against Polymarket.
+  </footer>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const n = x => (x ?? 0).toLocaleString();
+
+function ago(iso){
+  const s = (Date.now() - new Date(iso)) / 1000;
+  if (s < 90) return Math.round(s) + "s ago";
+  if (s < 5400) return Math.round(s/60) + "m ago";
+  return (s/3600).toFixed(1) + "h ago";
+}
+
+function tile(k, v, colour){
+  return `<div class="tile"><div class="k">${k}</div>
+          <div class="v" ${colour ? `style="color:${colour}"` : ""}>${v}</div></div>`;
+}
+
+async function load(){
+  let d;
+  try {
+    const r = await fetch("status.json?t=" + Date.now(), {cache:"no-store"});
+    d = await r.json();
+  } catch (e) {
+    $("#sub").innerHTML = `<span class="err">cannot reach the recorder</span>`;
+    return;
+  }
+  // Written every 20s, so 90s means it really has stopped rather than
+  // one slow discovery sweep.
+  const stale = (Date.now() - new Date(d.generated)) / 1000 > 90;
+  const colour = stale ? "var(--bad)" : "var(--ok)";
+  $("#title").innerHTML =
+    `<span class="dot" style="background:${colour}"></span>Recorder — ` +
+    (stale ? "stale" : "live");
+  $("#sub").textContent =
+    `updated ${ago(d.generated)} · up ${d.uptime_hours}h · ` +
+    `${d.connections} connection${d.connections === 1 ? "" : "s"}`;
+
+  const quiet = d.quiet_seconds > 120 ? "var(--bad)"
+              : d.quiet_seconds > 45  ? "var(--warn)" : null;
+  $("#tiles").innerHTML = [
+    tile("markets", n(d.subscribed)),
+    tile("book updates", n(d.book_updates)),
+    tile("rows written", n(d.rows_written)),
+    tile("trades seen", n(d.trades)),
+    tile("last tick", d.quiet_seconds + "s", quiet),
+    tile("tape on disk", (d.tape_gb ?? "?") + " GB"),
+    tile("disk free", (d.disk?.free_gb ?? "?") + " GB",
+         (d.disk?.free_gb ?? 99) < 8 ? "var(--bad)" : null),
+    tile("settle queue", n(d.settle_queue)),
+  ].join("");
+
+  const sports = Object.entries(d.sports || {});
+  if (!sports.length){
+    $("#sports").innerHTML = `<p class="muted">No markets subscribed right now.</p>`;
+    return;
+  }
+  sports.sort((a,b) => b[1].markets - a[1].markets);
+  $("#sports").innerHTML = sports.map(([name, s]) => {
+    const leagues = Object.entries(s.leagues)
+      .map(([l,c]) => `${l} ${c}`).join(" · ");
+    const games = (s.sample || []).map(g => `
+      <tr><td>${g.title || g.event || g.slug}</td>
+          <td class="muted">${g.period || ""}</td>
+          <td class="muted">${g.score || ""}</td></tr>`).join("");
+    return `
+      <table style="margin-bottom:10px">
+        <tr><th style="width:42%">${name}</th>
+            <th class="n">events</th><th class="n">markets</th><th>leagues</th></tr>
+        <tr><td></td><td class="n">${n(s.events)}</td>
+            <td class="n">${n(s.markets)}</td>
+            <td class="muted">${leagues}</td></tr>
+      </table>
+      <details><summary>${s.sample.length} live market${s.sample.length===1?"":"s"} in ${name}</summary>
+        <div class="games"><table>${games}</table></div>
+      </details>`;
+  }).join("");
+}
+load();
+setInterval(load, 15000);
+</script>
