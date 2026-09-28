@@ -625,8 +625,13 @@ BAND_HI = Decimal("0.35")
 
 # --- storage -----------------------------------------------------------------
 TAPE_PREFIX = "tape"
-DEDUP = True                 # skip writes when the book state is unchanged (~55% of msgs)
-BOOK_LEVELS = 10             # depth levels to persist per side
+DEDUP = False
+# Collection mode: keep every update. The dedup key was top-of-book only
+# (bid, ask, and the two top quantities), so a skipped row discarded every
+# change deeper in the book and in total depth, and destroyed timing - a
+# quote resting three seconds looked identical to one resting three
+# minutes. 58% of updates were being dropped for about 2.4x the disk.
+BOOK_LEVELS = 20   # deeper book while collecting; was 10
 SCORECARD_INTERVAL = 900     # seconds between scorecard dumps
 
 # Watchdog: if subscribed and no websocket message for this long, the socket is

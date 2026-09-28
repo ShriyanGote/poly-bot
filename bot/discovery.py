@@ -152,6 +152,15 @@ class Discovery:
                 st = e.get("eventState") or {}
                 if (e.get("ended") or st.get("ended")) and e.get("slug"):
                     self.ended.add(e["slug"])
+                # Scores were only picked up by sweep(), every few minutes,
+                # while this runs every 30s off the same response and threw
+                # them away. Score is the coarsest thing on the tape and the
+                # only record of what is happening in the match.
+                sc = e.get("score") or st.get("score")
+                if sc and e.get("slug"):
+                    self.scores[e["slug"]] = str(sc)
+                if e.get("slug") and e.get("title"):
+                    self.titles[e["slug"]] = str(e["title"])
                 live = (not e.get("closed")
                         and self._state_class(e, e.get("period")) == "live")
                 for m in e.get("markets", []):
