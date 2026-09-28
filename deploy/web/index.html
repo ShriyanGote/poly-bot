@@ -117,10 +117,20 @@ async function load(){
   $("#sports").innerHTML = sports.map(([name, s]) => {
     const leagues = Object.entries(s.leagues)
       .map(([l,c]) => `${l} ${c}`).join(" · ");
-    const games = (s.sample || []).map(g => `
-      <tr><td>${g.title || g.event || g.slug}</td>
-          <td class="muted">${g.period || ""}</td>
-          <td class="muted">${g.score || ""}</td></tr>`).join("");
+    // Group by event: a three-way soccer match is three markets, and showing
+    // the event title on each row made them look like duplicates.
+    const byEvent = {};
+    for (const g of (s.sample || [])){
+      const k = g.event || g.slug;
+      (byEvent[k] = byEvent[k] || {title: g.title || k, period: g.period,
+                                   score: g.score, slugs: []}).slugs.push(g.slug);
+    }
+    const games = Object.values(byEvent).map(e => `
+      <tr><td>${e.title}
+              <span class="muted" style="font-size:12px">
+                &nbsp;${e.slugs.length} market${e.slugs.length===1?"":"s"}</span></td>
+          <td class="muted">${e.period || ""}</td>
+          <td class="muted">${e.score || ""}</td></tr>`).join("");
     return `
       <table style="margin-bottom:10px">
         <tr><th style="width:42%">${name}</th>
@@ -129,7 +139,7 @@ async function load(){
             <td class="n">${n(s.markets)}</td>
             <td class="muted">${leagues}</td></tr>
       </table>
-      <details><summary>${s.sample.length} live market${s.sample.length===1?"":"s"} in ${name}</summary>
+      <details><summary>${Object.keys(byEvent).length} live event${Object.keys(byEvent).length===1?"":"s"} in ${name}</summary>
         <div class="games"><table>${games}</table></div>
       </details>`;
   }).join("");
