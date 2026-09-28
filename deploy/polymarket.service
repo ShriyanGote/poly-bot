@@ -2,6 +2,12 @@
 Description=Polymarket recorder
 After=network-online.target
 Wants=network-online.target
+# StartLimit* belong to [Unit], not [Service]. Put in [Service] they are
+# silently ignored and the default limit applies - five restarts in ten
+# seconds and systemd gives up for good, which is the one outcome this
+# unit exists to prevent. A venue outage can fail many attempts in a row.
+StartLimitIntervalSec=0
+StartLimitBurst=0
 
 [Service]
 Type=simple
@@ -13,8 +19,6 @@ ExecStart=/home/poly/Polymarket/.venv/bin/python run.py
 # the most data was a laptop that stopped, not a crash.
 Restart=always
 RestartSec=10
-# Do not give up after repeated restarts: a venue outage can fail many in a row.
-StartLimitIntervalSec=0
 StandardOutput=append:/home/poly/Polymarket/logs/service.log
 StandardError=append:/home/poly/Polymarket/logs/service.log
 # The recorder saves state on SIGTERM; give it time to flush the gzip tapes.

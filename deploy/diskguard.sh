@@ -2,6 +2,8 @@
 # A full disk stops the tapes silently: gzip writes fail, the recorder keeps
 # running, and the data is simply gone. Archive oldest-first before that.
 set -euo pipefail
+# Follow the symlink: data/ lives on the attached volume, and df on the
+# symlink path reports the volume, which is what we want to watch.
 DATA=/home/poly/Polymarket/data
 KEEP_FREE_PCT=15
 
