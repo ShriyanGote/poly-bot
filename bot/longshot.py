@@ -252,7 +252,10 @@ class Longshot:
                     entry_depth=ask_depth if side == "long" else bid_depth,
                     bid_total=bid_total, ask_total=ask_total, activity=busy,
                     period=period, score=score, status=status, reason=reason)
-                if sport == "tennis" and market_kind(slug) == "moneyline":
+                # Every sport, not just tennis: the shadow table is how a
+                # sport earns or loses its case, and tennis-only meant no
+                # other sport could ever be judged on the same footing.
+                if market_kind(slug) == "moneyline":
                     self.signals.observe_shadow(
                         slug=slug, league=league, side=side, price=price,
                         bid=bid, ask=ask, spread=spread,

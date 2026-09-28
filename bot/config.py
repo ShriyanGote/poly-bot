@@ -80,7 +80,12 @@ LS_TRAIL_SINCE = 1790010000.0      # 2026-09-21 17:00:00 UTC
 # under every arm/drawdown combination tried (best case -23%). Setka Cup table
 # tennis was 18 of 27 trades and dominated the losses.
 # Everything is still RECORDED; this only limits what we buy.
-LS_SPORTS = {"tennis"}   # tennis only: football is 13 trades at -73% and out of season
+LS_SPORTS = {"tennis", "basketball", "soccer", "baseball", "cricket", "football"}
+# Paper only. Trading a sport is how it gets trade records to analyse; the
+# recorder already subscribes to every series regardless, so this costs no
+# extra bandwidth. Volume differs enormously - tennis and esports produce
+# ~100 markets a day, basketball ~4 - so only the high-volume sports will
+# reach a conclusive sample in a week.
 
 # Per-sport rules. Anything a sport does not override falls back to the
 # LS_BAND_*/LS_TRAIL_* values below, so tennis behaves exactly as before.
@@ -150,7 +155,13 @@ LS_SPORT_RULES = {
     # first-touch's 100%. With real settlements the ranking reversed. The
     # activity gate goes too: it is the same trade-off, less volume for an
     # edge the corrected data does not show.
+    # Same exit for every 1-5% sport, so a cross-sport comparison varies only
+    # the sport. Football keeps its own band and therefore its own arm.
     "tennis": {"arm": Decimal("5"), "drawdown": Decimal("0.20")},
+    "basketball": {"arm": Decimal("5"), "drawdown": Decimal("0.20")},
+    "soccer": {"arm": Decimal("5"), "drawdown": Decimal("0.20")},
+    "baseball": {"arm": Decimal("5"), "drawdown": Decimal("0.20")},
+    "cricket": {"arm": Decimal("5"), "drawdown": Decimal("0.20")},
     "football": {"band_lo": Decimal("0.10"), "band_hi": Decimal("0.20"),
                  "arm": Decimal("2.0"), "drawdown": Decimal("0.35")},
 }
