@@ -80,7 +80,11 @@ LS_TRAIL_SINCE = 1790010000.0      # 2026-09-21 17:00:00 UTC
 # under every arm/drawdown combination tried (best case -23%). Setka Cup table
 # tennis was 18 of 27 trades and dominated the losses.
 # Everything is still RECORDED; this only limits what we buy.
-LS_SPORTS = {"tennis", "basketball", "soccer", "baseball", "cricket", "football"}
+LS_SPORTS = {"tennis", "esports", "baseball", "football"}
+# Study set. cfb already maps to football via sport_of(), so college and
+# pro are one sport here. Basketball, soccer and cricket are still
+# RECORDED - the recorder subscribes to every live series regardless -
+# they are simply not paper-traded, so they produce no trade records.
 # Paper only. Trading a sport is how it gets trade records to analyse; the
 # recorder already subscribes to every series regardless, so this costs no
 # extra bandwidth. Volume differs enormously - tennis and esports produce
@@ -162,6 +166,7 @@ LS_SPORT_RULES = {
     "soccer": {"arm": Decimal("5"), "drawdown": Decimal("0.20")},
     "baseball": {"arm": Decimal("5"), "drawdown": Decimal("0.20")},
     "cricket": {"arm": Decimal("5"), "drawdown": Decimal("0.20")},
+    "esports": {"arm": Decimal("5"), "drawdown": Decimal("0.20")},
     "football": {"band_lo": Decimal("0.10"), "band_hi": Decimal("0.20"),
                  "arm": Decimal("2.0"), "drawdown": Decimal("0.35")},
 }
