@@ -168,9 +168,22 @@ def render(args, color):
             # point of running them is to compare fills against paper.
             real = [c for c in shown if c.get("real")]
             if real:
-                rp = sum(Decimal(c["pnl"]) for c in real)
-                rs = sum(Decimal(c["entry_px"]) * c["qty"] for c in real)
-                rw = sum(1 for c in real if Decimal(c["pnl"]) > 0)
+                # Use the REAL fill quantities and prices. Paper assumes 20
+                # shares at the quoted price; real orders partially fill, so
+                # paper qty overstates what was actually staked and earned -
+                # it reported $9.99 staked for $7.01 of real money.
+                def _rq(c):
+                    return Decimal(str(c.get("real_qty") or c["qty"]))
+
+                def _rin(c):
+                    return Decimal(str(c.get("real_entry_px") or c["entry_px"]))
+
+                def _rout(c):
+                    return Decimal(str(c.get("real_exit_px") or c["exit_px"]))
+
+                rs = sum(_rq(c) * _rin(c) for c in real)
+                rp = sum(_rq(c) * (_rout(c) - _rin(c)) for c in real)
+                rw = sum(1 for c in real if _rout(c) > _rin(c))
                 out.append(paint(
                     f"\n  REAL MONEY: {len(real)} trade(s)  staked ${float(rs):.2f}  "
                     f"pnl {float(rp):+.2f}  "
