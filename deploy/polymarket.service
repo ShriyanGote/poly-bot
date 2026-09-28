@@ -1,0 +1,25 @@
+[Unit]
+Description=Polymarket recorder
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=poly
+WorkingDirectory=/home/poly/Polymarket
+EnvironmentFile=/home/poly/Polymarket/.env
+ExecStart=/home/poly/Polymarket/.venv/bin/python run.py
+# Always come back, and keep coming back. The four-day outage that cost us
+# the most data was a laptop that stopped, not a crash.
+Restart=always
+RestartSec=10
+# Do not give up after repeated restarts: a venue outage can fail many in a row.
+StartLimitIntervalSec=0
+StandardOutput=append:/home/poly/Polymarket/logs/service.log
+StandardError=append:/home/poly/Polymarket/logs/service.log
+# The recorder saves state on SIGTERM; give it time to flush the gzip tapes.
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
