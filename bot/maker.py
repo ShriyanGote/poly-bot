@@ -264,7 +264,7 @@ class Maker:
                     "fills": st["fills"], "quotes": st["quotes"],
                     "bought": st["bought"], "sold": st["sold"],
                     "undercut": st["undercut"], "alone_secs": st["alone_secs"],
-                    "marked": "last_mid", "waited_hours": 0.0,
+                    "marked": "pre_fix", "waited_hours": 0.0,
                 })
                 self.pending.pop(slug)
                 continue
@@ -311,6 +311,7 @@ class Maker:
                 unreal += (Decimal(st["cash"])
                            + Decimal(st["inv"]) * Decimal(st["last_mid"]))
         quoting = sum(1 for st in self.books.values() if st["bid"] or st["ask"])
+        scorable = [c for c in self.closed if c["marked"] != "pre_fix"]
         inv_pending = sum(1 for st in self.pending.values()
                           if Decimal(st["inv"]) != 0)
         return {
@@ -334,7 +335,11 @@ class Maker:
                  for k, v in self.books.items()
                  if Decimal(v["inv"]) != 0),
                 key=lambda r: -abs(Decimal(r["inv"])))[:20],
+            # Scored over markets the current logic actually handled; the
+            # pre-fix records are reported separately rather than folded in.
             "settled_frac": (
-                round(sum(1 for c in self.closed if c["marked"] == "settled")
-                      / len(self.closed), 3) if self.closed else None),
+                round(sum(1 for c in scorable if c["marked"] == "settled")
+                      / len(scorable), 3) if scorable else None),
+            "pre_fix_closed": sum(1 for c in self.closed
+                                  if c["marked"] == "pre_fix"),
         }

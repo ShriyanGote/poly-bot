@@ -256,11 +256,15 @@ async function load(){
         `. They are deliberately not scored yet: marking an unsettled
          market at its mid is the most flattering mistake available here, so
          they wait up to 6h for a real outcome before falling back.`);
-    if (sf !== null && sf !== undefined && sf < 0.8 && m.closed)
+    if (sf !== null && sf !== undefined && sf < 0.8)
       bits.push(`<span style="color:var(--warn)">Only
-        ${Math.round(sf*100)}% of closed markets were valued at their real
-        settlement</span>; the rest use the last price seen, which flatters
-        leftover inventory.`);
+        ${Math.round(sf*100)}% of scored markets used their real
+        settlement</span>; the rest fell back to the last price seen, which
+        flatters leftover inventory.`);
+    if (m.pre_fix_closed)
+      bits.push(`<span class="muted">${n(m.pre_fix_closed)} early market${m.pre_fix_closed===1?"":"s"}
+        closed before settlements were being waited for; they cannot be
+        re-scored and are excluded from the settled figure.</span>`);
     bits.push(`Paper only — this engine cannot place an order.`);
     $("#mmverdict").innerHTML = `<div class="verdict">${bits.join(" ")}</div>`;
   }
