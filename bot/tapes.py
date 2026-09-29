@@ -10,12 +10,16 @@ members that are actually broken.
 import csv
 import gzip
 import io
+import mmap
 import re
 import zlib
 
 from . import config
 
 _MAGIC = re.compile(rb"\x1f\x8b\x08")
+# Sentinel between members so the row reader knows to reset its
+# line buffer and header rather than splice two members together.
+_MEMBER_START = object()
 
 
 def tape_files(prefix="tape", sport=None):
@@ -70,27 +74,34 @@ def _members(path):
     So decode incrementally, keep whatever came before the damage, and make a
     candidate boundary prove it decodes into tape text before trusting it.
     """
-    raw = path.read_bytes()
+    fh = open(path, "rb")
+    # mmap, not read_bytes: resync needs random access to the compressed file,
+    # but not for it to be resident. A 200 MB tape should not cost 200 MB.
+    raw = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
     pos = 0
     n = len(raw)
     while pos is not None and pos < n:
         d = zlib.decompressobj(31)
-        chunks = []
         i = pos
         broke = False
+        started = False
         try:
             while i < n:
                 piece = raw[i:i + (1 << 20)]
                 got = d.decompress(piece)
                 if got:
-                    chunks.append(got)
+                    if not started:
+                        started = True
+                        yield _MEMBER_START
+                    # Stream it. Joining the whole member first cost 2.95 GB on
+                    # a seven-million-row tape, which is fatal beside a live
+                    # recorder on a small box.
+                    yield got
                 i += len(piece)
                 if d.eof:
                     break
         except Exception:
             broke = True
-        if chunks:
-            yield b"".join(chunks)
         if not broke and d.eof:
             # unused_data holds only what was left over from the chunks
             # actually fed, so the next member starts relative to i - not to
@@ -118,7 +129,13 @@ def _known_headers():
 
 
 def _rows(path):
-    """Rows from a tape, recovering past damaged members."""
+    """Rows from a tape, recovering past damaged members.
+
+    Parsed line by line out of a stream of chunks rather than by materialising
+    a whole member, so memory stays flat however large the tape is. Reading one
+    seven-million-row tennis tape used to peak at 2.95 GB, which is fatal on a
+    small box sitting next to a live recorder.
+    """
     try:
         with gzip.open(path, "rt") as fh:
             for row in csv.DictReader(fh):
@@ -128,24 +145,51 @@ def _rows(path):
         pass                  # fall through to member recovery
 
     header = None
+    buf = b""
+    known = _known_headers()
+
+    def emit(line):
+        nonlocal header
+        if not line:
+            return None
+        try:
+            parts = next(csv.reader([line.decode("utf-8", errors="replace")]))
+        except (csv.Error, StopIteration):
+            return None
+        if not parts:
+            return None
+        if parts[0] == "ts":          # a member can start with its own header
+            header = parts
+            return None
+        cols = header if header is not None else list(config.BOOK_HEADER_FALLBACK)
+        if len(parts) != len(cols):
+            alt = known.get(len(parts))
+            if alt is None:
+                return None           # genuinely torn at a member edge
+            return dict(zip(alt, parts))
+        return dict(zip(cols, parts))
+
     for blob in _members(path):
-        text = blob.decode("utf-8", errors="replace")
-        rdr = csv.reader(io.StringIO(text))
-        for parts in rdr:
-            if not parts:
-                continue
-            if parts[0] == "ts":          # a member can start with its own header
-                header = parts
-                continue
-            if header is None:
-                header = list(config.BOOK_HEADER_FALLBACK)
-            if len(parts) != len(header):
-                alt = _known_headers().get(len(parts))
-                if alt is None:
-                    continue              # genuinely torn at a member edge
-                yield dict(zip(alt, parts))
-                continue
-            yield dict(zip(header, parts))
+        if blob is _MEMBER_START:
+            # The previous member's last line may have had no trailing newline;
+            # dropping it silently loses a row. Flush it, then reset - the old
+            # header does not describe the new member's rows.
+            row = emit(buf.rstrip(b"\r"))
+            if row is not None:
+                yield row
+            buf, header = b"", None
+            continue
+        buf += blob
+        if b"\n" not in buf:
+            continue
+        *lines, buf = buf.split(b"\n")
+        for line in lines:
+            row = emit(line.rstrip(b"\r"))
+            if row is not None:
+                yield row
+    row = emit(buf.rstrip(b"\r"))     # trailing line when the member ended clean
+    if row is not None:
+        yield row
 
 
 def read(prefix="tape", sport=None):
