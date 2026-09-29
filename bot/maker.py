@@ -75,6 +75,15 @@ class Maker:
         self.books = d.get("books") or {}
         self.closed = d.get("closed") or []
         self.pending = d.get("pending") or {}
+        # gone_at used to be stamped with the event loop's clock, which counts
+        # from boot rather than 1970, while the requeue below stamps wall time.
+        # Mixed, the wait came out ~56 years or negative. Move the old stamps
+        # onto the wall clock.
+        skew = time.time() - time.monotonic()
+        for st in self.pending.values():
+            g = st.get("gone_at")
+            if g is not None and g < 1e9:
+                st["gone_at"] = g + skew
         # One-time repair. The first version of reap() closed a market the
         # instant it left the subscription list, marking it at the last mid
         # because the venue had not published a settlement yet - so every

@@ -798,10 +798,19 @@ class Recorder:
                     self.paper.save()
                 if self.maker:
                     self.maker.reap(
-                        now=now,
+                        now=time.time(),
                         live_markets=self.subscribed,
                         settle=(self.longshot._settlement_of
                                 if self.longshot else self._settlement_of))
+                    # Everything the maker is waiting on must be asked for.
+                    # The queue above only catches a market that drops out of
+                    # a sweep while still subscribed; one lost to a retired
+                    # socket or a restart never shows up in `gone`, so its
+                    # settlement was never fetched and it would have been
+                    # scored at its last mid after the grace period.
+                    for slug in self.maker.pending:
+                        if slug.startswith("aec-"):
+                            self._queue_settle(slug, time.time())
                     self.maker.save()
                 if self.longshot:
                     k = await asyncio.to_thread(self.longshot.settle_gone,
