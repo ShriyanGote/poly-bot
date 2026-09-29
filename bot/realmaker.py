@@ -787,7 +787,19 @@ class RealMaker:
             vp = pos.get(slug) or {}
             venue = abs(Decimal(str(vp.get("netPosition") or 0)))
             ours = abs(Decimal(m["n"]))
-            if venue != ours:
+            if venue == 0 and ours != 0 and await self._resolved_at_venue(slug):
+                # The venue settled it before discovery told us the match
+                # was over. Not drift: the market is finished.
+                m["active"] = False
+                m["want"] = {"bid": None, "ask": None}
+                m["ended_at"] = _now_iso()
+                self.log(f"REALMM {slug} resolved at the venue; stopping it")
+                self._drift.pop(slug, None)
+                self._wake(slug)
+                continue
+            # netPosition is rounded to whole shares (a 0.56-share fill reads
+            # as 1), so a gap under one share is display, not disagreement.
+            if abs(venue - ours) >= 1:
                 self._drift[slug] = self._drift.get(slug, 0) + 1
                 self.log(f"REALMM position drift {slug[:36]}: venue {venue} vs ours "
                          f"{ours} ({self._drift[slug]}x)")
@@ -796,6 +808,14 @@ class RealMaker:
                     return
             else:
                 self._drift.pop(slug, None)
+
+    async def _resolved_at_venue(self, slug):
+        try:
+            acts = (await self.client.portfolio.activities()).get("activities") or []
+        except Exception:
+            return False
+        return any((a.get("positionResolution") or {}).get("marketSlug") == slug
+                   for a in acts)
 
     # --- endings --------------------------------------------------------------
     def reap(self, live_markets, settle):
