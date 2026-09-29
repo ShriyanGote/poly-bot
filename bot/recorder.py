@@ -370,6 +370,17 @@ class Recorder:
             except OSError:
                 pass
 
+    def _title(self, slug):
+        """The match a market belongs to, as people would name it."""
+        if not hasattr(self, "_titles"):
+            try:
+                self._titles = json.loads(
+                    (config.DATA / "event_titles.json").read_text())
+            except (OSError, ValueError):
+                self._titles = {}
+        event = slug[4:] if slug.startswith("aec-") else slug
+        return self.disc.titles.get(event) or self._titles.get(event)
+
     def _save_titles(self):
         """Write the event-title cache the viewers read.
 
@@ -385,6 +396,7 @@ class Recorder:
         except ValueError:
             have = {}
         merged = {**have, **self.disc.titles}
+        self._titles = merged
         if merged == have:
             return
         try:
@@ -894,7 +906,7 @@ class Recorder:
             "disk": disk,
             "tape_gb": tape_gb,
             "sports": sports,
-            "maker": self.maker.summary() if self.maker else None,
+            "maker": self.maker.summary(self._title) if self.maker else None,
             # What is actually armed, so the page never has to guess. The whole
             # point of showing this is that "which engine is running" was
             # previously only answerable by reading config on the box.

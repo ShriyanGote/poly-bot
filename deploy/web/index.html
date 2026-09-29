@@ -65,6 +65,7 @@
   <div class="row" id="mmtiles"></div>
   <div id="mmverdict"></div>
   <div id="mmpos"></div>
+  <div id="mmsettled"></div>
   <div id="mmfeed"></div>
   <details id="mmhelp"><summary>What this strategy is, and what would kill it</summary>
     <div class="note">
@@ -133,6 +134,17 @@ function ago(iso){
   if (s < 5400) return Math.round(s/60) + "m ago";
   return (s/3600).toFixed(1) + "h ago";
 }
+
+// "A vs. B" -> ["A", "B"]. The venue's long side is always the first name, so
+// a settlement of 1 means the first-named player or team won.
+function sides(title){
+  const t = (title || "").split(/\s+vs\.?\s+/i);
+  return t.length === 2 ? t : [title || "side 1", "the other side"];
+}
+const money = x => (x >= 0 ? "+$" : "−$") + Math.abs(x).toFixed(2);
+const col = x => x > 0 ? "var(--ok)" : x < 0 ? "var(--bad)" : "var(--dim)";
+const esc = x => String(x ?? "").replace(/[&<>"]/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 
 function tile(k, v, colour){
   return `<div class="tile"><div class="k">${k}</div>
@@ -280,30 +292,101 @@ async function load(){
       // alone: a short 191 shares is +$73 at zero and -$118 at one.
       const cash = Number(p.cash);
       const atOne = cash + inv * 1, atZero = cash;
-      const money = x => (x >= 0 ? "+$" : "−$") + Math.abs(x).toFixed(2);
-      const col = x => x >= 0 ? "var(--ok)" : "var(--bad)";
+      const [a, b] = sides(p.title);
+      // Short the first name pays exactly what long the second would, so
+      // name the player the position is actually riding on.
+      const on = inv > 0 ? a : b;
       return `<tr>
-        <td>${p.market.replace(/^aec-/, "")}
-            <span class="muted" style="font-size:12px">&nbsp;${p.fills} fills</span></td>
-        <td class="n" style="color:${col(inv)}">${inv > 0 ? "long" : "short"}
-            ${Math.abs(inv).toFixed(0)}</td>
+        <td>${esc(p.title || p.market.replace(/^aec-/, ""))}
+            <div class="muted" style="font-size:12px">${esc(p.league)} · ${p.fills} fills</div></td>
+        <td class="n">${Math.abs(inv).toFixed(0)} on ${esc(on)}</td>
         <td class="n muted">${p.mid ?? "—"}</td>
         <td class="n" style="color:${col(mark)}">${money(mark)}</td>
-        <td class="n" style="color:var(--ok)">${money(atZero)}</td>
-        <td class="n" style="color:var(--bad)">${money(atOne)}</td></tr>`;
+        <td class="n" style="color:${col(atOne)}">${money(atOne)}
+            <div class="muted" style="font-size:11px">${esc(a)} wins</div></td>
+        <td class="n" style="color:${col(atZero)}">${money(atZero)}
+            <div class="muted" style="font-size:11px">${esc(b)} wins</div></td></tr>`;
     }).join("");
     $("#mmpos").innerHTML = `
       <h2 style="margin-top:14px">Open positions</h2>
       <p class="muted" style="font-size:12px;margin:0 0 6px">
         Marked at the current mid. These settle at 0 or 1 and nothing between,
-        so the last two columns are what each position actually pays at each
-        outcome — the real spread of risk the mid-mark hides.</p>
+        so the last two columns are what each position actually pays for each
+        result — the real spread of risk the mid-mark hides.</p>
       <table>
-        <tr><th style="width:38%">market</th><th class="n">position</th>
+        <tr><th style="width:30%">match</th><th class="n">position</th>
             <th class="n">mid</th><th class="n">mark</th>
-            <th class="n">if 0</th><th class="n">if 1</th></tr>
+            <th class="n">if first wins</th><th class="n">if second wins</th></tr>
         ${rows}
       </table>`;
+  }
+
+  // --- settled markets ----------------------------------------------------
+  const done = (m && m.settled) || [];
+  const traded = done.filter(c => c.marked !== "pre_fix" && c.fills > 0);
+  const idle = done.filter(c => c.marked !== "pre_fix" && !c.fills);
+  const early = done.filter(c => c.marked === "pre_fix");
+  if (!traded.length){
+    $("#mmsettled").innerHTML = "";
+  } else {
+    const px = x => x == null ? "" : Number(x).toFixed(2);
+    const sum = k => traded.reduce((t, c) => t + Number(c[k] ?? 0), 0);
+    const split = traded.every(c => c.spread_pnl != null);
+    const rows = traded.map(c => {
+      const [a, b] = sides(c.title);
+      const v = c.close == null ? null : Number(c.close);
+      const winner = c.marked !== "settled"
+        ? `<span style="color:var(--warn)">no result — scored at last price ${px(c.close)}</span>`
+        : v === 1 ? `<b>${esc(a)}</b> won` : v === 0 ? `<b>${esc(b)}</b> won`
+        : `void, paid ${px(v)}`;
+      const inv = Number(c.inv ?? 0);
+      const held = Math.abs(inv) < 0.005 ? "nothing — fully matched"
+        : `${Math.abs(inv).toFixed(0)} on ${esc(inv > 0 ? a : b)}${
+            v !== 0 && v !== 1 ? "" : (inv > 0) === (v === 1)
+              ? ` <span style="color:var(--ok)">(won)</span>`
+              : ` <span style="color:var(--bad)">(lost)</span>`}`;
+      const did = [
+        Number(c.bought) ? `bought ${Number(c.bought).toFixed(0)}${c.avg_buy ? " @ " + px(c.avg_buy) : ""}` : "",
+        Number(c.sold) ? `sold ${Number(c.sold).toFixed(0)}${c.avg_sell ? " @ " + px(c.avg_sell) : ""}` : "",
+      ].filter(Boolean).join(" · ");
+      const cell = x => x == null ? `<td class="n muted">?</td>`
+        : `<td class="n" style="color:${col(Number(x))}">${money(Number(x))}</td>`;
+      return `<tr>
+        <td>${esc(c.title || c.slug.replace(/^aec-/, ""))}
+            <div class="muted" style="font-size:12px">${esc(c.league)} · ${c.fills} fills${
+              c.closed_at ? " · " + ago(c.closed_at) : ""}</div></td>
+        <td>${winner}</td>
+        <td style="font-size:13px">${did}
+            <div class="muted" style="font-size:12px">left holding ${held}</div></td>
+        ${cell(c.spread_pnl)}${cell(c.result_pnl)}
+        <td class="n" style="color:${col(Number(c.pnl))}"><b>${money(Number(c.pnl))}</b></td></tr>`;
+    }).join("");
+    const unknown = traded.filter(c => c.spread_pnl == null).length;
+    $("#mmsettled").innerHTML = `
+      <h2 style="margin-top:14px">Settled markets</h2>
+      <p class="muted" style="font-size:12px;margin:0 0 6px">
+        Every market we traded that has finished, newest first, scored on the
+        real result. <b>Spread</b> is what we made on shares we both bought and
+        sold: (average sell − average buy) × shares matched. <b>Result</b> is
+        what the winner did to the shares we were left holding. The two add up
+        to the total. Prices are for the first-named side winning.</p>
+      <div style="overflow-x:auto"><table style="min-width:720px">
+        <tr><th style="width:26%">match</th><th>result</th><th>what we did</th>
+            <th class="n">spread</th><th class="n">result</th><th class="n">total</th></tr>
+        ${rows}
+        <tr><td colspan="3"><b>${traded.length} market${traded.length===1?"":"s"}</b></td>
+            ${split ? `<td class="n" style="color:${col(sum("spread_pnl"))}">${money(sum("spread_pnl"))}</td>
+                       <td class="n" style="color:${col(sum("result_pnl"))}">${money(sum("result_pnl"))}</td>`
+                    : `<td class="n muted" colspan="2">split unknown for ${unknown}</td>`}
+            <td class="n" style="color:${col(sum("pnl"))}"><b>${money(sum("pnl"))}</b></td></tr>
+      </table></div>
+      <p class="muted" style="font-size:12px;margin-top:5px">
+        ${unknown ? `${unknown} market${unknown===1?"":"s"} show <b>?</b> for the split: they traded on both
+        sides before the fill log started, so only their totals are known. ` : ""}
+        ${idle.length ? `${idle.length} more settled with no fills (we quoted, nobody traded with us) for $0. ` : ""}
+        ${early.length ? `${early.length} early markets were closed at their last price before
+        settlements were waited for (${money(early.reduce((t, c) => t + Number(c.pnl), 0))});
+        they cannot be re-scored and are left out.` : ""}</p>`;
   }
 
   const feed = (m && m.recent) || [];
@@ -319,7 +402,8 @@ async function load(){
         <td class="n">${f.px}</td>
         <td class="n muted">${f.bid ?? "?"} / ${f.ask ?? "?"}</td>
         <td class="n muted">${f.spread_ticks ?? "?"}t</td>
-        <td>${(f.market||"").replace(/^aec-/, "")}</td></tr>`;
+        <td>${esc(f.title || (f.market||"").replace(/^aec-/, ""))}
+            <div class="muted" style="font-size:11px">price is for ${esc(sides(f.title)[0])} winning</div></td></tr>`;
     }).join("");
     $("#mmfeed").innerHTML = `
       <h2 style="margin-top:14px">Recent fills</h2>
@@ -330,7 +414,7 @@ async function load(){
       <table>
         <tr><th style="width:9%">time</th><th>side</th><th class="n">qty</th>
             <th class="n">our price</th><th class="n">book</th>
-            <th class="n">spread</th><th>market</th></tr>
+            <th class="n">spread</th><th>match</th></tr>
         ${rows}
       </table>
       <p class="muted" style="font-size:12px;margin-top:5px">

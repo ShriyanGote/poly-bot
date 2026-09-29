@@ -36,6 +36,8 @@ at the front of the queue.
 """
 
 import collections
+import csv
+import gzip
 import json
 import time
 from datetime import datetime, timezone
@@ -125,6 +127,85 @@ class Maker:
                 })
             self.log(f"maker: requeued {len(requeue)} market(s) that were "
                      f"closed at the last mid before settlement was available")
+        self._backfill_costs()
+
+    def _backfill_costs(self):
+        """Recover what each market's shares cost, for records made before
+        buy_cost and sell_proc were tracked.
+
+        `cash` alone cannot say whether +$10 came from selling 100 at 0.60
+        against 100 bought at 0.50, or from one lucky fill. The fill log has
+        every price, but it only started partway through: fills before it are
+        known only as totals. Those split exactly when they all went one way,
+        and are left unknown (None) otherwise rather than guessed.
+        """
+        closed = [c for c in self.closed if c.get("marked") != "pre_fix"]
+        need = [st for st in (*self.books.values(), *self.pending.values(),
+                              *closed) if "buy_cost" not in st]
+        if not need:
+            return
+        try:
+            sets = json.loads((config.DATA / "settlements.json").read_text())
+        except (OSError, ValueError):
+            sets = {}
+        for c in closed:
+            if "close" not in c:
+                v = sets.get(c["slug"]) if c.get("marked") == "settled" else None
+                inv = Decimal(c.get("bought", "0")) - Decimal(c.get("sold", "0"))
+                c["inv"] = str(inv)
+                c["close"] = v
+                c["cash"] = (str(Decimal(c["pnl"]) - inv * Decimal(v))
+                             if v is not None else None)
+        log = {}
+        for f in sorted(config.DATA.glob("mmfills-*.csv.gz")):
+            for r in _read_gz_csv(f):
+                if r.get("market") and r.get("qty"):
+                    log.setdefault(r["market"], []).append(r)
+        slug_of = {id(st): k for k, st in (*self.books.items(),
+                                           *self.pending.items())}
+        slug_of.update({id(c): c["slug"] for c in closed})
+        for st in need:
+            if not st.get("fills"):
+                st["buy_cost"], st["sell_proc"] = "0", "0"
+                continue
+            rows = sorted(log.get(slug_of[id(st)], []), key=lambda r: r["ts"])
+            lb = ls = lc = lp = Decimal(0)
+            for r in rows:
+                q, px = Decimal(r["qty"]), Decimal(r["px"])
+                if r["side"] == "buy":
+                    lb, lc = lb + q, lc + q * px
+                else:
+                    ls, lp = ls + q, lp + q * px
+            last = rows[-1] if rows else None
+            if last and (st.get("cash") is None
+                         or abs(Decimal(last["inv_after"]) - Decimal(st["inv"])) > Decimal("0.000001")
+                         or abs(Decimal(last["cash_after"]) - Decimal(st["cash"])) > Decimal("0.000001")):
+                # Fills missing after the log's last row (a crash lost its
+                # unflushed tail), so the gap is not all before the log.
+                st["buy_cost"] = st["sell_proc"] = None
+                continue
+            if rows:
+                r = rows[0]
+                q, px = Decimal(r["qty"]), Decimal(r["px"])
+                cash0 = Decimal(r["cash_after"]) + (q * px if r["side"] == "buy"
+                                                    else -q * px)
+            elif st.get("cash") is not None:
+                cash0 = Decimal(st["cash"])
+            else:
+                cash0 = None
+            pre_b = Decimal(st.get("bought", "0")) - lb
+            pre_s = Decimal(st.get("sold", "0")) - ls
+            eps = Decimal("0.000001")
+            if abs(pre_b) < eps and abs(pre_s) < eps:
+                pc = pp = Decimal(0)
+            elif cash0 is not None and abs(pre_s) < eps:
+                pc, pp = -cash0, Decimal(0)
+            elif cash0 is not None and abs(pre_b) < eps:
+                pc, pp = Decimal(0), cash0
+            else:
+                st["buy_cost"] = st["sell_proc"] = None
+                continue
+            st["buy_cost"], st["sell_proc"] = str(pc + lc), str(pp + lp)
 
     def save(self):
         try:
@@ -147,6 +228,7 @@ class Maker:
                 "league": league,
                 "inv": "0", "cash": "0",
                 "bought": "0", "sold": "0",
+                "buy_cost": "0", "sell_proc": "0",
                 "bid": None, "ask": None,       # our resting quotes
                 "fills": 0, "quotes": 0,
                 # The competition metrics this engine exists to collect.
@@ -220,10 +302,14 @@ class Maker:
             st["cash"] = str(Decimal(st["cash"]) - qty * px)
             st["inv"] = str(Decimal(st["inv"]) + qty)
             st["bought"] = str(Decimal(st["bought"]) + qty)
+            if st.get("buy_cost") is not None:
+                st["buy_cost"] = str(Decimal(st["buy_cost"]) + qty * px)
         else:
             st["cash"] = str(Decimal(st["cash"]) + qty * px)
             st["inv"] = str(Decimal(st["inv"]) - qty)
             st["sold"] = str(Decimal(st["sold"]) + qty)
+            if st.get("sell_proc") is not None:
+                st["sell_proc"] = str(Decimal(st["sell_proc"]) + qty * px)
         bid, ask = st.get("last_bid"), st.get("last_ask")
         ticks = (int((Decimal(ask) - Decimal(bid)) / config.DEFAULT_TICK)
                  if bid and ask else None)
@@ -318,11 +404,15 @@ class Maker:
                 "alone_secs": st["alone_secs"],
                 "marked": "settled" if sv is not None else "last_mid",
                 "waited_hours": round(waited / 3600, 2),
+                "inv": st["inv"], "cash": st["cash"], "close": str(close),
+                "buy_cost": st.get("buy_cost"), "sell_proc": st.get("sell_proc"),
+                "closed_at": datetime.now(timezone.utc).isoformat(),
             })
             self.pending.pop(slug)
 
     # --- reporting ----------------------------------------------------------
-    def summary(self):
+    def summary(self, title=None):
+        title = title or (lambda slug: None)
         net = sum(Decimal(c["pnl"]) for c in self.closed) if self.closed else ZERO
         # Count open markets as well. Everything interesting happens before a
         # market settles, so reporting only closed ones shows an active engine
@@ -356,9 +446,13 @@ class Maker:
             "unrealised": str(round(unreal, 2)),
             "net_incl_open": str(round(net + unreal, 2)),
             "alone_secs": round(alone, 1),
-            "recent": list(self.recent)[:25],
+            "recent": [{**r, "title": title(r.get("market", ""))}
+                       for r in list(self.recent)[:25]],
+            "settled": [_explain(c, title(c["slug"]))
+                        for c in reversed(self.closed)][:200],
             "positions": sorted(
-                ({"market": k, "league": v["league"], "inv": v["inv"],
+                ({"market": k, "title": title(k),
+                  "league": v["league"], "inv": v["inv"],
                   "cash": v["cash"], "mid": v["last_mid"], "fills": v["fills"],
                   "bid": v["bid"], "ask": v["ask"],
                   "mark": str(round(Decimal(v["cash"]) + Decimal(v["inv"])
@@ -375,3 +469,49 @@ class Maker:
             "pre_fix_closed": sum(1 for c in self.closed
                                   if c["marked"] == "pre_fix"),
         }
+
+
+def _read_gz_csv(path):
+    """Rows of a gzipped CSV, including one still being written to (its
+    stream has no end marker yet, which gzip reports as an error at the end)."""
+    rows = []
+    try:
+        with gzip.open(path, "rt", newline="") as f:
+            for r in csv.DictReader(f):
+                rows.append(r)
+    except (EOFError, OSError, gzip.BadGzipFile, csv.Error):
+        pass
+    return rows
+
+
+def _explain(c, title):
+    """One closed market, told as what happened to it.
+
+    P&L splits into what the two-sided trading earned on shares we both bought
+    and sold (the spread) and what the result did to the shares left over.
+    Computed from average prices, then checked against the recorded total:
+    if the two do not add back up, the split is withheld rather than shown.
+    """
+    out = {k: c.get(k) for k in ("slug", "league", "pnl", "fills", "bought",
+                                 "sold", "inv", "close", "marked",
+                                 "waited_hours", "closed_at")}
+    out["title"] = title
+    b, s = Decimal(c.get("bought") or 0), Decimal(c.get("sold") or 0)
+    bc, sp = c.get("buy_cost"), c.get("sell_proc")
+    out["avg_buy"] = str(round(Decimal(bc) / b, 4)) if bc is not None and b else None
+    out["avg_sell"] = str(round(Decimal(sp) / s, 4)) if sp is not None and s else None
+    out["spread_pnl"] = out["result_pnl"] = None
+    if bc is None or sp is None or c.get("close") is None:
+        return out
+    v, bc, sp = Decimal(c["close"]), Decimal(bc), Decimal(sp)
+    pb = bc / b if b else Decimal(0)
+    ps = sp / s if s else Decimal(0)
+    matched = min(b, s)
+    spread = matched * (ps - pb)
+    left = b - s
+    result = left * (v - pb) if left > 0 else -left * (ps - v)
+    if abs(spread + result - Decimal(c["pnl"])) > Decimal("0.01"):
+        return out
+    out["spread_pnl"] = str(round(spread, 2))
+    out["result_pnl"] = str(round(result, 2))
+    return out
