@@ -796,10 +796,17 @@ class Recorder:
                     if n:
                         self.log(f"reaped {n} stale position(s)/order(s)")
                     self.paper.save()
-                if self.maker:
+                if self.maker and self.disc.complete:
+                    # Judge liveness by discovery, not by `subscribed`. There
+                    # is no unsubscribe, so `subscribed` keeps a finished match
+                    # for as long as its socket lives: markets that ended hours
+                    # earlier stayed in the open book marked at a dead mid, and
+                    # a restart then parked them all at once. Only trust a
+                    # sweep that read every page, or a short one parks live
+                    # markets.
                     self.maker.reap(
                         now=time.time(),
-                        live_markets=self.subscribed,
+                        live_markets=set(found),
                         settle=(self.longshot._settlement_of
                                 if self.longshot else self._settlement_of))
                     # Everything the maker is waiting on must be asked for.

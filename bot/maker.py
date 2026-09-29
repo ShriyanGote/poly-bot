@@ -61,6 +61,9 @@ class Maker:
         # mid, because marking an unsettled binary at its mid is the bias that
         # once produced a fake +323% return at a 100% win rate.
         self.pending = {}
+        # Markets the last complete discovery sweep listed. None until the
+        # first one, so a restart does not stall quoting while it runs.
+        self.live = None
         self._load()
 
     # --- persistence ---------------------------------------------------------
@@ -133,6 +136,12 @@ class Maker:
 
     def _state(self, slug, league):
         st = self.books.get(slug)
+        if st is None and slug in self.pending:
+            # Parked by a sweep that missed it (a one-sided book drops out of
+            # discovery), yet it is still trading. Resume its position; a
+            # fresh book here would later overwrite the parked one on reap.
+            st = self.books[slug] = self.pending.pop(slug)
+            st.pop("gone_at", None)
         if st is None:
             st = self.books[slug] = {
                 "league": league,
@@ -155,6 +164,10 @@ class Maker:
         if config.MAKER_PREFIXES and not slug.startswith(config.MAKER_PREFIXES):
             return
         if config.MAKER_SPORTS and config.sport_of(league) not in config.MAKER_SPORTS:
+            return
+        if self.live is not None and slug not in self.live:
+            # A finished match keeps streaming, often a gutted book whose
+            # "mid" is meaningless; quoting or marking it is fiction.
             return
         st = self._state(slug, league)
         st["last_mid"] = str((bid + ask) / 2)
@@ -264,6 +277,7 @@ class Maker:
         """
         if live_markets is None:
             return
+        self.live = set(live_markets)
         now = now or time.time()
         for slug in [s for s in self.books if s not in live_markets]:
             st = self.books.pop(slug)

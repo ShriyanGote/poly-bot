@@ -35,6 +35,9 @@ class Discovery:
         self.client = client
         self.log = log
         self.backoff = 0.0
+        # False when the last sweep stopped early (rate limit, error, page
+        # cap), so a market missing from it may simply not have been read.
+        self.complete = False
         self.spacing = config.REQUEST_SPACING
         self.last_request = 0.0
         self.sweeps = 0
@@ -174,6 +177,7 @@ class Discovery:
         """Returns {market_slug: (league, event_slug, period)} for live games."""
 
         found = {}
+        self.complete = False
         if self.backoff:
             self.log(f"discovery backing off {self.backoff:.0f}s after rate limit")
             time.sleep(self.backoff)
@@ -206,6 +210,7 @@ class Discovery:
 
             events = res.get("events", [])
             if not events:
+                self.complete = True
                 break
             pages += 1
 
@@ -264,6 +269,7 @@ class Discovery:
                                    ticks.get(slug, config.DEFAULT_TICK))
 
             if len(events) < 100:
+                self.complete = True
                 break
 
         self.sweeps += 1
