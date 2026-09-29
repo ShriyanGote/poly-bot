@@ -16,6 +16,7 @@ from . import config
 from .discovery import Discovery
 from .excursions import Excursions
 from .longshot import Longshot
+from .maker import Maker
 from .paper import Paper
 from .storage import Store
 
@@ -60,10 +61,16 @@ class Recorder:
         self.store = Store()
         self.disc = Discovery(self.client, self.log)
         self.exc = Excursions(on_event=self._on_excursion)
-        self.paper = Paper(self.log) if paper_enabled else None
+        # paper_enabled is the master off switch (--no-paper); each engine also
+        # has its own config flag, so the losing scalper can be stopped without
+        # stopping the exit logic that sells real positions.
+        on = paper_enabled
+        self.paper = Paper(self.log) if (on and config.PAPER_SCALPER) else None
         # Second, independent engine. The scalper stays on as a known-losing
         # control so the two can be compared on identical data.
-        self.longshot = Longshot(self.log, self.client) if paper_enabled else None
+        self.longshot = (Longshot(self.log, self.client)
+                         if (on and config.LONGSHOT_ENABLED) else None)
+        self.maker = Maker(self.log) if (on and config.MAKER_ENABLED) else None
         self.meta = {}
         # request_id -> the markets that request carried. The per-connection
         # cap is reported as an async error frame AFTER the subscribe call
@@ -163,6 +170,16 @@ class Recorder:
             "maker_side": (t.get("maker") or {}).get("side"),
             "trade_id": t.get("id"), "trade_time": t.get("tradeTime"),
         })
+        if self.maker:
+            try:
+                px = (t.get("price") or {}).get("value")
+                qty = (t.get("quantity") or {}).get("value")
+                self.maker.on_trade(
+                    slug, d(px) if px is not None else None,
+                    d(qty) if qty is not None else None,
+                    (t.get("taker") or {}).get("side"))
+            except Exception as e:
+                self.log(f"maker trade error: {type(e).__name__} {str(e)[:80]}")
 
     def _on_book(self, md):
         slug = md.get("marketSlug")
@@ -189,6 +206,10 @@ class Recorder:
                 "bid_depth": bids[0]["qty"], "ask_depth": offers[0]["qty"],
                 "bid_total": bt, "ask_total": at, "imbalance": round(imb, 4),
                 "state": md.get("state", ""),
+                # The venue stamps every book frame; we were dropping it, which
+                # is why our own staleness could only be measured from a live
+                # 30-second probe instead of from history.
+                "transact_time": md.get("transactTime", ""),
                 "bid_levels": pack(bids, config.BOOK_LEVELS),
                 "ask_levels": pack(offers, config.BOOK_LEVELS),
             },
@@ -205,6 +226,11 @@ class Recorder:
                 self.paper.on_book(slug, league, bid, ask, bids, offers, tick)
             except Exception as e:
                 self.log(f"paper error: {type(e).__name__} {str(e)[:80]}")
+        if self.maker:
+            try:
+                self.maker.on_book(slug, league, bid, ask, tick, time.time())
+            except Exception as e:
+                self.log(f"maker error: {type(e).__name__} {str(e)[:80]}")
         if self.longshot:
             try:
                 self.longshot.on_book(slug, league, bid, ask, tick, period,
@@ -250,6 +276,29 @@ class Recorder:
     def _queue_settle(self, slug, now):
         self._pending_settle.setdefault(
             slug, {"since": now, "next": 0.0, "tries": 0})
+
+    def _settlement_of(self, slug):
+        """What a finished market paid, from the harvested file.
+
+        The maker needs this to mark leftover inventory, and it must not depend
+        on the longshot engine being switched on - that engine owns the API
+        lookups, but the harvester writes SETTLEMENTS regardless, so read the
+        file. Only a real settlement closes a market; a market absent here is
+        marked at its last mid instead, and which of the two was used is
+        recorded per market so the difference is never averaged away.
+        """
+        try:
+            st = config.SETTLEMENTS.stat().st_mtime
+        except OSError:
+            return None
+        if getattr(self, "_settle_mtime", None) != st:
+            try:
+                self._settle_cache = json.loads(config.SETTLEMENTS.read_text())
+            except (OSError, ValueError):
+                self._settle_cache = {}
+            self._settle_mtime = st
+        v = self._settle_cache.get(slug)
+        return Decimal(str(v)) if v is not None else None
 
     def _harvest_settlements(self):
         """Record what finished markets actually paid, permanently.
@@ -350,6 +399,16 @@ class Recorder:
         They arrive as files rather than edits to longshot_state.json, because
         the engine rewrites that file wholesale and would discard them.
         """
+        if not self.longshot:
+            # Nothing owns positions, so a stale request cannot be honoured.
+            # Clear it rather than leaving it to be retried forever.
+            for f in sorted(config.REQUESTS.glob("close-*.json")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+                self.log("MANUAL sell ignored: longshot engine is off")
+            return
         for f in sorted(config.REQUESTS.glob("close-*.json")):
             try:
                 want = json.loads(f.read_text()).get("match") or []
@@ -736,6 +795,12 @@ class Recorder:
                     if n:
                         self.log(f"reaped {n} stale position(s)/order(s)")
                     self.paper.save()
+                if self.maker:
+                    self.maker.reap(
+                        live_markets=self.subscribed,
+                        settle=(self.longshot._settlement_of
+                                if self.longshot else self._settlement_of))
+                    self.maker.save()
                 if self.longshot:
                     k = await asyncio.to_thread(self.longshot.settle_gone,
                                                 self.subscribed)
@@ -811,6 +876,7 @@ class Recorder:
             "disk": disk,
             "tape_gb": tape_gb,
             "sports": sports,
+            "maker": self.maker.summary() if self.maker else None,
         }
         try:
             tmp = config.STATUS_FILE.with_suffix(".tmp")
@@ -826,6 +892,10 @@ class Recorder:
                  f"books {self.msgs}", f"trades {self.trades}",
                  f"tape {self.store.written}w/{self.store.skipped}dup",
                  f"exc {self.exc.events}"]
+        if self.maker:
+            m = self.maker.summary()
+            parts.append(f"mm {m['quoting_now']}q/{m['fills']}f/"
+                         f"{m['undercut']}beat net{m['net']}")
         if self.disc.rate_limit_hits:
             parts.append(f"429x{self.disc.rate_limit_hits}")
         parts.append(f"quiet {time.time()-self.last_msg:.0f}s")
@@ -862,6 +932,9 @@ class Recorder:
 
     def shutdown(self):
         self._save_pending()
+        if self.maker:
+            self.maker.save()
+            self.log(f"maker {self.maker.summary()}")
         if self.longshot:
             self.longshot.save()
             self.log(self.longshot.summary())

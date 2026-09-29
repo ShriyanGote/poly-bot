@@ -123,7 +123,8 @@ def _known_headers():
     """
     from .storage import BOOK_HEADER
     out = {}
-    for h in (config.BOOK_HEADER_FALLBACK, BOOK_HEADER):
+    for h in (config.BOOK_HEADER_FALLBACK,
+              config.BOOK_HEADER_PRE_TRANSACT, BOOK_HEADER):
         out[len(h)] = list(h)
     return out
 

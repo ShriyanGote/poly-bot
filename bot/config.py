@@ -21,6 +21,39 @@ STATUS_FILE = DATA / "status.json"   # published for the status page
 # sweep looks like a failure. Writing it costs nothing - no API calls.
 STATUS_INTERVAL = 20
 LS_SIGNAL_DB = DATA / "longshot_signals.sqlite3"
+MAKER_STATE = DATA / "maker_state.json"
+
+# --- engine switches ---------------------------------------------------------
+# Three independent engines, so they can be turned on and off separately. They
+# used to share one --no-paper flag, which meant stopping the losing scalper
+# also stopped the exit logic that sells real positions - not a choice anyone
+# should have to make by accident.
+#   PAPER_SCALPER  the original dip-buyer. Pays the spread on every entry, and
+#                  the spread here costs a median 33% of entry price round
+#                  trip, so it cannot win. Off.
+#   LONGSHOT       the cheap-convexity directional engine. Ran -27%, CI
+#                  [-50%, -1%]. Off. Turn it back on if real positions are ever
+#                  open again, because it owns their exits.
+#   MAKER          the wide-spread paper market maker. On.
+PAPER_SCALPER = False
+LONGSHOT_ENABLED = False
+MAKER_ENABLED = True
+
+# --- wide-spread market maker -------------------------------------------------
+# Quote both sides only where the spread is wide enough to pay for the
+# inventory we get stuck with. 6 ticks was chosen on tennis and then held up
+# out of sample in esports, baseball, basketball, football and hockey.
+MAKER_MIN_SPREAD = 6                  # ticks; below this we do not quote at all
+MAKER_INSIDE = 1                      # whole ticks inside the touch to post
+MAKER_SIZE = Decimal("20")            # shares per fill
+MAKER_MAX_INV = Decimal("200")        # per-market inventory cap, either side
+MAKER_SPORTS: set = set()             # empty = every sport
+# Only the market families the study actually covered. mmsim.py filtered to
+# "aec-" throughout, so the +$3,319 says nothing about prop or game-level
+# markets ("asc-", "astatc-", "atc-"), which are far thinner - the smoke test
+# found the engine happily quoting a 0.75/0.98 prop book. Widen this only after
+# a backtest that includes them.
+MAKER_PREFIXES = ("aec-",)
 
 # --- longshot convexity engine ------------------------------------------------
 # Buy cheap and hold: loss is capped at the premium paid, so there is no stop to
@@ -682,6 +715,13 @@ MARKET_PRIORITY = ("aec-",)      # moneyline first; everything else after
 
 
 # Used when recovering a damaged tape whose member lost its header row.
+# Layouts that exist on disk from before a column was appended. A row whose
+# width matches no known header is DROPPED, so every retired layout has to stay
+# listed here - forgetting one is how ~70% of a day's tennis rows vanished once.
+BOOK_HEADER_PRE_TRANSACT = (
+    "ts", "league", "sport", "event", "market", "period", "bid", "ask", "mid",
+    "spread", "short_px", "bid_depth", "ask_depth", "bid_total", "ask_total",
+    "imbalance", "state", "bid_levels", "ask_levels", "score")
 BOOK_HEADER_FALLBACK = ("ts", "league", "sport", "event", "market", "period",
                         "bid", "ask", "mid", "spread", "short_px", "bid_depth",
                         "ask_depth", "bid_total", "ask_total", "imbalance",

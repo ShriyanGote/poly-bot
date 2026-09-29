@@ -13,7 +13,11 @@ BOOK_HEADER = ["ts", "league", "sport", "event", "market", "period", "bid", "ask
                # Appended, never inserted: a file opened earlier today already
                # has its header row written, and shifting a column would
                # misalign every row appended afterwards.
-               "score"]
+               "score",
+               # Appended 2026-09-28. The venue stamps each frame with
+               # transactTime; without it our own feed staleness could only be
+               # measured live, never from the tape.
+               "transact_time"]
 
 TRADE_HEADER = ["ts", "league", "sport", "market", "price", "qty", "taker_side",
                 "taker_intent", "maker_side", "trade_id", "trade_time"]
