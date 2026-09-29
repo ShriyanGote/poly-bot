@@ -877,6 +877,23 @@ class Recorder:
             "tape_gb": tape_gb,
             "sports": sports,
             "maker": self.maker.summary() if self.maker else None,
+            # What is actually armed, so the page never has to guess. The whole
+            # point of showing this is that "which engine is running" was
+            # previously only answerable by reading config on the box.
+            "engines": {
+                "scalper": bool(self.paper),
+                "longshot": bool(self.longshot),
+                "maker": bool(self.maker),
+                "real_money": bool(config.LS_REAL_ENABLED
+                                   and config.LS_REAL_NEW_ENTRIES),
+            },
+            "maker_rule": {
+                "min_spread_ticks": config.MAKER_MIN_SPREAD,
+                "inside_ticks": config.MAKER_INSIDE,
+                "size": str(config.MAKER_SIZE),
+                "max_inventory": str(config.MAKER_MAX_INV),
+                "prefixes": list(config.MAKER_PREFIXES),
+            } if self.maker else None,
         }
         try:
             tmp = config.STATUS_FILE.with_suffix(".tmp")
