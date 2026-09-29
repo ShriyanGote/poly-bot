@@ -895,7 +895,7 @@ class Recorder:
         if self.maker:
             m = self.maker.summary()
             parts.append(f"mm {m['quoting_now']}q/{m['fills']}f/"
-                         f"{m['undercut']}beat net{m['net']}")
+                         f"{m['undercut']}beat net{m['net_incl_open']}")
         if self.disc.rate_limit_hits:
             parts.append(f"429x{self.disc.rate_limit_hits}")
         parts.append(f"quiet {time.time()-self.last_msg:.0f}s")

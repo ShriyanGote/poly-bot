@@ -207,12 +207,22 @@ class Maker:
         alone = (sum(c["alone_secs"] for c in self.closed)
                  + sum(st["alone_secs"] for st in self.books.values()))
         open_inv = sum(abs(Decimal(st["inv"])) for st in self.books.values())
+        # Mark open markets at the last mid we saw. `net` alone counts only
+        # settled markets, so early on it reads 0.00 beside hundreds of fills
+        # and a live position - which looks like the engine is doing nothing.
+        unreal = ZERO
+        for st in self.books.values():
+            if st["last_mid"]:
+                unreal += (Decimal(st["cash"])
+                           + Decimal(st["inv"]) * Decimal(st["last_mid"]))
         quoting = sum(1 for st in self.books.values() if st["bid"] or st["ask"])
         return {
             "open": len(self.books), "quoting_now": quoting,
             "closed": len(self.closed), "net": str(round(net, 2)),
             "fills": fills, "undercut": under,
             "open_inventory": str(open_inv),
+            "unrealised": str(round(unreal, 2)),
+            "net_incl_open": str(round(net + unreal, 2)),
             "alone_secs": round(alone, 1),
             "settled_frac": (
                 round(sum(1 for c in self.closed if c["marked"] == "settled")
