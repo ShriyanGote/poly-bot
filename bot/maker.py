@@ -82,6 +82,15 @@ class Maker:
         # identifiable: marked "last_mid" but with no waited_hours, which only
         # the grace-expiry path writes. Put them back in the queue so they get
         # scored properly if the settlement has since landed.
+        # An earlier pass through this migration wrote those same records as
+        # "last_mid" with waited_hours 0.0, which no longer matches the requeue
+        # test below. They are still identifiable: a genuine grace expiry only
+        # happens after MAKER_SETTLE_GRACE, so zero hours waited means it was
+        # never waited for at all.
+        for c in self.closed:
+            if (c.get("marked") == "last_mid"
+                    and c.get("waited_hours") == 0.0):
+                c["marked"] = "pre_fix"
         requeue = [c for c in self.closed
                    if c.get("marked") == "last_mid" and "waited_hours" not in c]
         if requeue:
