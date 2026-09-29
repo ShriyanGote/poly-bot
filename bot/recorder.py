@@ -798,6 +798,7 @@ class Recorder:
                     self.paper.save()
                 if self.maker:
                     self.maker.reap(
+                        now=now,
                         live_markets=self.subscribed,
                         settle=(self.longshot._settlement_of
                                 if self.longshot else self._settlement_of))

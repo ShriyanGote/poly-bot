@@ -37,6 +37,7 @@ at the front of the queue.
 
 import collections
 import json
+import time
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -55,6 +56,11 @@ class Maker:
         self.recent = collections.deque(maxlen=40)
         self.books = {}          # slug -> per-market state
         self.closed = []         # settled markets, for the running total
+        # Markets that have finished but whose settlement the venue has not
+        # published yet. They wait here rather than being closed at the last
+        # mid, because marking an unsettled binary at its mid is the bias that
+        # once produced a fake +323% return at a 100% win rate.
+        self.pending = {}
         self._load()
 
     # --- persistence ---------------------------------------------------------
@@ -68,11 +74,42 @@ class Maker:
             return
         self.books = d.get("books") or {}
         self.closed = d.get("closed") or []
+        self.pending = d.get("pending") or {}
+        # One-time repair. The first version of reap() closed a market the
+        # instant it left the subscription list, marking it at the last mid
+        # because the venue had not published a settlement yet - so every
+        # market was scored on a price instead of an outcome. Those records are
+        # identifiable: marked "last_mid" but with no waited_hours, which only
+        # the grace-expiry path writes. Put them back in the queue so they get
+        # scored properly if the settlement has since landed.
+        requeue = [c for c in self.closed
+                   if c.get("marked") == "last_mid" and "waited_hours" not in c]
+        if requeue:
+            for c in requeue:
+                self.closed.remove(c)
+                self.pending.setdefault(c["slug"], {
+                    "league": c.get("league", "?"),
+                    "inv": "0", "cash": c["pnl"],
+                    "bought": c.get("bought", "0"), "sold": c.get("sold", "0"),
+                    "bid": None, "ask": None,
+                    "fills": c.get("fills", 0), "quotes": c.get("quotes", 0),
+                    "undercut": c.get("undercut", 0),
+                    "alone_secs": c.get("alone_secs", 0.0),
+                    "last_seen": None, "last_mid": None,
+                    "last_bid": None, "last_ask": None,
+                    "gone_at": time.time(),
+                    # The position is gone; only its P&L survives, so re-score
+                    # is impossible. Keep it flagged rather than pretend.
+                    "unrecoverable": True,
+                })
+            self.log(f"maker: requeued {len(requeue)} market(s) that were "
+                     f"closed at the last mid before settlement was available")
 
     def save(self):
         try:
             config.MAKER_STATE.write_text(json.dumps(
-                {"books": self.books, "closed": self.closed}, indent=1))
+                {"books": self.books, "closed": self.closed,
+                 "pending": self.pending}, indent=1))
         except OSError as e:
             self.log(f"maker save failed: {type(e).__name__}")
 
@@ -198,21 +235,45 @@ class Maker:
                     self._book_fill(slug, st, "sell", mine, take)
 
     # --- settlement ---------------------------------------------------------
-    def reap(self, live_markets=None, settle=None):
-        """Close out markets that are gone, marking inventory at settlement.
+    def reap(self, live_markets=None, settle=None, now=None):
+        """Retire finished markets, but only score them once they settle.
 
-        A market marked at its last mid instead of its real settlement flatters
-        leftover inventory, so which of the two was used is recorded per market
-        rather than averaged away.
+        A market leaves the subscription list as soon as its match ends, while
+        the venue does not answer for its settlement until some time later. The
+        first version closed immediately at the last mid, so every market was
+        scored on a price rather than an outcome - which is the exact bias that
+        has flattered this project before. So park them and keep asking.
         """
         if live_markets is None:
             return
+        now = now or time.time()
         for slug in [s for s in self.books if s not in live_markets]:
             st = self.books.pop(slug)
+            st["gone_at"] = now
+            self.pending[slug] = st
+
+        for slug, st in list(self.pending.items()):
             sv = settle(slug) if settle else None
+            waited = now - (st.get("gone_at") or now)
+            if st.get("unrecoverable"):
+                # Its position was already collapsed into a P&L by the old
+                # code, so there is nothing left to re-mark. Keep the number,
+                # keep the flag, and let settled_frac show it honestly.
+                self.closed.append({
+                    "slug": slug, "league": st["league"], "pnl": st["cash"],
+                    "fills": st["fills"], "quotes": st["quotes"],
+                    "bought": st["bought"], "sold": st["sold"],
+                    "undercut": st["undercut"], "alone_secs": st["alone_secs"],
+                    "marked": "last_mid", "waited_hours": 0.0,
+                })
+                self.pending.pop(slug)
+                continue
+            if sv is None and waited < config.MAKER_SETTLE_GRACE:
+                continue                     # still worth waiting for
             close = sv if sv is not None else (
                 Decimal(st["last_mid"]) if st["last_mid"] else None)
             if close is None:
+                self.pending.pop(slug)       # nothing to score it on at all
                 continue
             inv = Decimal(st["inv"])
             pnl = Decimal(st["cash"]) + inv * Decimal(close)
@@ -224,7 +285,9 @@ class Maker:
                 "undercut": st["undercut"],
                 "alone_secs": st["alone_secs"],
                 "marked": "settled" if sv is not None else "last_mid",
+                "waited_hours": round(waited / 3600, 2),
             })
+            self.pending.pop(slug)
 
     # --- reporting ----------------------------------------------------------
     def summary(self):
@@ -248,8 +311,12 @@ class Maker:
                 unreal += (Decimal(st["cash"])
                            + Decimal(st["inv"]) * Decimal(st["last_mid"]))
         quoting = sum(1 for st in self.books.values() if st["bid"] or st["ask"])
+        inv_pending = sum(1 for st in self.pending.values()
+                          if Decimal(st["inv"]) != 0)
         return {
             "open": len(self.books), "quoting_now": quoting,
+            "awaiting_settlement": len(self.pending),
+            "awaiting_with_inventory": inv_pending,
             "closed": len(self.closed), "net": str(round(net, 2)),
             "fills": fills, "undercut": under,
             "open_inventory": str(open_inv),

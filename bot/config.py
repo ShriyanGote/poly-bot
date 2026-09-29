@@ -54,6 +54,11 @@ MAKER_SPORTS: set = set()             # empty = every sport
 # found the engine happily quoting a 0.75/0.98 prop book. Widen this only after
 # a backtest that includes them.
 MAKER_PREFIXES = ("aec-",)
+# How long to wait for a real settlement before giving up and scoring a market
+# at the last mid we saw. The venue does not answer for a while after a match
+# ends, and scoring a binary at its mid instead of its outcome is the single
+# most flattering mistake available here, so wait hours rather than minutes.
+MAKER_SETTLE_GRACE = 6 * 3600
 
 # --- longshot convexity engine ------------------------------------------------
 # Buy cheap and hold: loss is capped at the premium paid, so there is no stop to

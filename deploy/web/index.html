@@ -217,6 +217,8 @@ async function load(){
       tile("solo quoting", solo),
       tile("quoting now", n(m.quoting_now)),
       tile("markets held", n(m.open)),
+      tile("awaiting settlement", n(m.awaiting_settlement ?? 0),
+           (m.awaiting_with_inventory ?? 0) > 0 ? "var(--warn)" : null),
       tile("settled", sf === null || sf === undefined ? "—"
            : Math.round(sf*100) + "%",
            (sf !== null && sf !== undefined && sf < 0.8) ? "var(--warn)" : null),
@@ -245,11 +247,20 @@ async function load(){
           overnight games is not a sample, and which markets are live varies a
           lot by time of day.`);
     }
+    if (m.awaiting_settlement)
+      bits.push(`<b>${n(m.awaiting_settlement)}</b> finished market${m.awaiting_settlement===1?" is":"s are"}
+        waiting for the venue to publish a settlement` +
+        ((m.awaiting_with_inventory ?? 0) > 0
+          ? `, <span style="color:var(--warn)">${n(m.awaiting_with_inventory)} of them
+             still holding a position</span>` : "") +
+        `. They are deliberately not scored yet: marking an unsettled
+         market at its mid is the most flattering mistake available here, so
+         they wait up to 6h for a real outcome before falling back.`);
     if (sf !== null && sf !== undefined && sf < 0.8 && m.closed)
       bits.push(`<span style="color:var(--warn)">Only
         ${Math.round(sf*100)}% of closed markets were valued at their real
         settlement</span>; the rest use the last price seen, which flatters
-        leftover inventory. Expect this to climb as settlements are harvested.`);
+        leftover inventory.`);
     bits.push(`Paper only — this engine cannot place an order.`);
     $("#mmverdict").innerHTML = `<div class="verdict">${bits.join(" ")}</div>`;
   }
