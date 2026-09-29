@@ -43,7 +43,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from polymarket_us import AsyncPolymarketUS
-from polymarket_us.errors import NotFoundError, RateLimitError
+from polymarket_us.errors import BadRequestError, NotFoundError, RateLimitError
 
 from . import config
 
@@ -114,6 +114,8 @@ class RealMaker:
         self._backoff_until = 0.0
         self._drift = {}
         self._errors = collections.deque(maxlen=20)
+        self._last_triggered = 0.0
+        self._cancelled = collections.deque(maxlen=500)   # ids we cancelled
         # Where the mid went after each fill, real and paper, in the same
         # markets over the same windows. {kind: {horizon: {"n", "shares",
         # "edge", "mark"}}} as running sums of per-share cents x shares.
@@ -309,15 +311,20 @@ class RealMaker:
         cap = Decimal(config.REALMM_MAX_INV)
         out = {"bid": None, "ask": None}
         # Bid: buy back a short first, else open/add long.
+        # Closing orders are whole shares, but a fill can be fractional (0.56).
+        # A remainder under one share cannot be closed and rides to settlement;
+        # sending int(0.56) = 0 is a 400 from the venue.
         if n < 0:
-            out["bid"] = {"px": str(bp), "qty": int(min(size, -n)),
-                          "intent": "ORDER_INTENT_SELL_SHORT"}
+            if int(min(size, -n)) >= 1:
+                out["bid"] = {"px": str(bp), "qty": int(min(size, -n)),
+                              "intent": "ORDER_INTENT_SELL_SHORT"}
         elif n + size <= cap:
             out["bid"] = {"px": str(bp), "qty": int(size),
                           "intent": "ORDER_INTENT_BUY_LONG"}
         if n > 0:
-            out["ask"] = {"px": str(ap), "qty": int(min(size, n)),
-                          "intent": "ORDER_INTENT_SELL_LONG"}
+            if int(min(size, n)) >= 1:
+                out["ask"] = {"px": str(ap), "qty": int(min(size, n)),
+                              "intent": "ORDER_INTENT_SELL_LONG"}
         elif -n + size <= cap:
             out["ask"] = {"px": str(ap), "qty": int(size),
                           "intent": "ORDER_INTENT_BUY_SHORT"}
@@ -435,11 +442,17 @@ class RealMaker:
             m["orders"][side] = None
             self.row("rate_limited", slug, side=side)
             return
+        except BadRequestError as e:
+            # Refused outright, so nothing is resting: no reconcile needed.
+            m["orders"][side] = None
+            self._error(f"create {slug[:30]} {side} refused: {str(e)[:90]} "
+                        f"{w['intent']} {w['qty']}@{w['px']}")
+            return
         except Exception as e:
             self._error(f"create {slug[:30]} {side}: {type(e).__name__}: {str(e)[:90]}")
             # Unknown whether it landed: the reconcile finds out, adopting it
             # or clearing it. Until then it stays counted against the budget.
-            asyncio.ensure_future(self._reconcile())
+            self._reconcile_soon()
             return
         t1 = time.time()
         o["id"] = (resp or {}).get("id")
@@ -462,7 +475,7 @@ class RealMaker:
             return
         if not o.get("id"):
             # Reply never came back; only the reconcile can find it.
-            asyncio.ensure_future(self._reconcile())
+            self._reconcile_soon()
             return
         await self._throttle()
         t0 = time.time()
@@ -477,6 +490,7 @@ class RealMaker:
         except Exception as e:
             self._error(f"cancel {slug[:30]} {side}: {type(e).__name__}: {str(e)[:90]}")
             return
+        self._cancelled.append(o["id"])
         self.lat["cancel"].append((time.time() - t0) * 1000)
         self.counts["cancels"] += 1
         if m["orders"].get(side) is o:
@@ -737,6 +751,14 @@ class RealMaker:
             except Exception as e:
                 self.log(f"REALMM housekeeping: {type(e).__name__}: {str(e)[:90]}")
 
+    def _reconcile_soon(self):
+        """An order in an unknown state wants a reconcile, but not one per
+        order per second: they race the normal cancel/replace."""
+        if time.time() - self._last_triggered < 5:
+            return
+        self._last_triggered = time.time()
+        asyncio.ensure_future(self._reconcile())
+
     async def _reconcile(self):
         """The venue is the truth. Adopt its view of our orders; halt if its
         positions disagree with ours twice in a row (one miss can be a fill
@@ -756,7 +778,7 @@ class RealMaker:
         known = {o["id"] for m in self.mk.values() for o in m["orders"].values()
                  if o and o.get("id")}
         for vo in orders:
-            if vo.get("id") in known:
+            if vo.get("id") in known or vo.get("id") in self._cancelled:
                 continue
             slug = vo.get("marketSlug")
             m = self.mk.get(slug)
