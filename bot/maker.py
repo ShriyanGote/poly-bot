@@ -35,7 +35,9 @@ or below our bid trades with us, because posting inside the touch puts us alone
 at the front of the queue.
 """
 
+import collections
 import json
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from . import config
@@ -44,8 +46,13 @@ ZERO = Decimal("0")
 
 
 class Maker:
-    def __init__(self, log):
+    def __init__(self, log, on_fill=None):
         self.log = log
+        # Called with each fill so the recorder can tape it. Kept as a callback
+        # rather than a Store reference so the engine stays testable offline.
+        self.on_fill = on_fill
+        # Last N fills, for the status page. Bounded: a busy day is thousands.
+        self.recent = collections.deque(maxlen=40)
         self.books = {}          # slug -> per-market state
         self.closed = []         # settled markets, for the running total
         self._load()
@@ -83,6 +90,7 @@ class Maker:
                 "alone_secs": 0.0,              # time our quote stood best
                 "last_seen": None,              # for accumulating alone_secs
                 "last_mid": None,
+                "last_bid": None, "last_ask": None,
             }
         return st
 
@@ -95,6 +103,7 @@ class Maker:
             return
         st = self._state(slug, league)
         st["last_mid"] = str((bid + ask) / 2)
+        st["last_bid"], st["last_ask"] = str(bid), str(ask)
         tick = tick or config.DEFAULT_TICK
         ticks = int((ask - bid) / tick)
 
@@ -136,6 +145,35 @@ class Maker:
         st["bid"] = str(nb) if nb is not None else None
         st["ask"] = str(na) if na is not None else None
 
+    def _book_fill(self, slug, st, side, px, qty):
+        """Record a fill: state, the rolling feed, and the tape."""
+        st["fills"] += 1
+        if side == "buy":
+            st["cash"] = str(Decimal(st["cash"]) - qty * px)
+            st["inv"] = str(Decimal(st["inv"]) + qty)
+            st["bought"] = str(Decimal(st["bought"]) + qty)
+        else:
+            st["cash"] = str(Decimal(st["cash"]) + qty * px)
+            st["inv"] = str(Decimal(st["inv"]) - qty)
+            st["sold"] = str(Decimal(st["sold"]) + qty)
+        bid, ask = st.get("last_bid"), st.get("last_ask")
+        ticks = (int((Decimal(ask) - Decimal(bid)) / config.DEFAULT_TICK)
+                 if bid and ask else None)
+        row = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "league": st["league"], "sport": config.sport_of(st["league"]),
+            "market": slug, "side": side, "px": str(px), "qty": str(qty),
+            "bid": bid, "ask": ask, "spread_ticks": ticks,
+            "mid": st["last_mid"], "inv_after": st["inv"],
+            "cash_after": st["cash"],
+        }
+        self.recent.appendleft(row)
+        if self.on_fill:
+            try:
+                self.on_fill(row)
+            except Exception:
+                pass
+
     # --- trades -------------------------------------------------------------
     def on_trade(self, slug, price, qty, taker_side):
         """A taker crossing to our price trades with us."""
@@ -151,19 +189,13 @@ class Maker:
             if price <= mine and inv < config.MAKER_MAX_INV:
                 take = min(qty, size, config.MAKER_MAX_INV - inv)
                 if take > 0:
-                    st["cash"] = str(Decimal(st["cash"]) - take * mine)
-                    st["inv"] = str(inv + take)
-                    st["bought"] = str(Decimal(st["bought"]) + take)
-                    st["fills"] += 1
+                    self._book_fill(slug, st, "buy", mine, take)
         elif st["ask"] and side.endswith("BUY"):
             mine = Decimal(st["ask"])
             if price >= mine and inv > -config.MAKER_MAX_INV:
                 take = min(qty, size, config.MAKER_MAX_INV + inv)
                 if take > 0:
-                    st["cash"] = str(Decimal(st["cash"]) + take * mine)
-                    st["inv"] = str(inv - take)
-                    st["sold"] = str(Decimal(st["sold"]) + take)
-                    st["fills"] += 1
+                    self._book_fill(slug, st, "sell", mine, take)
 
     # --- settlement ---------------------------------------------------------
     def reap(self, live_markets=None, settle=None):
@@ -224,6 +256,17 @@ class Maker:
             "unrealised": str(round(unreal, 2)),
             "net_incl_open": str(round(net + unreal, 2)),
             "alone_secs": round(alone, 1),
+            "recent": list(self.recent)[:25],
+            "positions": sorted(
+                ({"market": k, "league": v["league"], "inv": v["inv"],
+                  "cash": v["cash"], "mid": v["last_mid"], "fills": v["fills"],
+                  "bid": v["bid"], "ask": v["ask"],
+                  "mark": str(round(Decimal(v["cash"]) + Decimal(v["inv"])
+                                    * Decimal(v["last_mid"]), 2))
+                          if v["last_mid"] else None}
+                 for k, v in self.books.items()
+                 if Decimal(v["inv"]) != 0),
+                key=lambda r: -abs(Decimal(r["inv"])))[:20],
             "settled_frac": (
                 round(sum(1 for c in self.closed if c["marked"] == "settled")
                       / len(self.closed), 3) if self.closed else None),

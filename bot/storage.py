@@ -22,6 +22,13 @@ BOOK_HEADER = ["ts", "league", "sport", "event", "market", "period", "bid", "ask
 TRADE_HEADER = ["ts", "league", "sport", "market", "price", "qty", "taker_side",
                 "taker_intent", "maker_side", "trade_id", "trade_time"]
 
+# Our own paper fills. Kept as a tape rather than only in the state file so a
+# week of live quoting can be scored against the backtest that motivated it -
+# and so the fill PRICE and the book we filled against are both recoverable,
+# which is what any disagreement will come down to.
+MMFILL_HEADER = ["ts", "league", "sport", "market", "side", "px", "qty",
+                 "bid", "ask", "spread_ticks", "mid", "inv_after", "cash_after"]
+
 EXC_HEADER = ["ts", "kind", "league", "sport", "market", "side", "threshold",
               "start_px", "min_px", "peak_px", "cur_px", "recovered_ticks",
               "ticks_off_low", "dip_secs", "secs_since_low"]
@@ -103,13 +110,14 @@ class Store:
         self.books = _Rolling("tape", BOOK_HEADER, dedup=config.DEDUP)
         self.trades = _Rolling("trades", TRADE_HEADER)
         self.exc = _Rolling("excursions", EXC_HEADER, flush_secs=10)
+        self.mmfills = _Rolling("mmfills", MMFILL_HEADER, flush_secs=10)
 
     def flush(self):
-        for t in (self.books, self.trades, self.exc):
+        for t in (self.books, self.trades, self.exc, self.mmfills):
             t.flush()
 
     def close(self):
-        for t in (self.books, self.trades, self.exc):
+        for t in (self.books, self.trades, self.exc, self.mmfills):
             t.close()
 
     @property

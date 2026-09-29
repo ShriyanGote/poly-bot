@@ -70,7 +70,8 @@ class Recorder:
         # control so the two can be compared on identical data.
         self.longshot = (Longshot(self.log, self.client)
                          if (on and config.LONGSHOT_ENABLED) else None)
-        self.maker = Maker(self.log) if (on and config.MAKER_ENABLED) else None
+        self.maker = (Maker(self.log, on_fill=self.store.mmfills.write)
+                      if (on and config.MAKER_ENABLED) else None)
         self.meta = {}
         # request_id -> the markets that request carried. The per-connection
         # cap is reported as an async error frame AFTER the subscribe call

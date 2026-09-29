@@ -64,6 +64,8 @@
   <div id="engines"></div>
   <div class="row" id="mmtiles"></div>
   <div id="mmverdict"></div>
+  <div id="mmpos"></div>
+  <div id="mmfeed"></div>
   <details id="mmhelp"><summary>What this strategy is, and what would kill it</summary>
     <div class="note">
       <p><b>What it does.</b> Instead of paying the spread to get in — which
@@ -250,6 +252,75 @@ async function load(){
         leftover inventory. Expect this to climb as settlements are harvested.`);
     bits.push(`Paper only — this engine cannot place an order.`);
     $("#mmverdict").innerHTML = `<div class="verdict">${bits.join(" ")}</div>`;
+  }
+
+  // --- live positions and fill feed --------------------------------------
+  const pos = (m && m.positions) || [];
+  if (!pos.length){
+    $("#mmpos").innerHTML = "";
+  } else {
+    const rows = pos.map(p => {
+      const inv = Number(p.inv), mark = Number(p.mark ?? 0);
+      // Settlement pays 0 or 1, so state both ends rather than the mid-mark
+      // alone: a short 191 shares is +$73 at zero and -$118 at one.
+      const cash = Number(p.cash);
+      const atOne = cash + inv * 1, atZero = cash;
+      const money = x => (x >= 0 ? "+$" : "−$") + Math.abs(x).toFixed(2);
+      const col = x => x >= 0 ? "var(--ok)" : "var(--bad)";
+      return `<tr>
+        <td>${p.market.replace(/^aec-/, "")}
+            <span class="muted" style="font-size:12px">&nbsp;${p.fills} fills</span></td>
+        <td class="n" style="color:${col(inv)}">${inv > 0 ? "long" : "short"}
+            ${Math.abs(inv).toFixed(0)}</td>
+        <td class="n muted">${p.mid ?? "—"}</td>
+        <td class="n" style="color:${col(mark)}">${money(mark)}</td>
+        <td class="n" style="color:var(--ok)">${money(atZero)}</td>
+        <td class="n" style="color:var(--bad)">${money(atOne)}</td></tr>`;
+    }).join("");
+    $("#mmpos").innerHTML = `
+      <h2 style="margin-top:14px">Open positions</h2>
+      <p class="muted" style="font-size:12px;margin:0 0 6px">
+        Marked at the current mid. These settle at 0 or 1 and nothing between,
+        so the last two columns are what each position actually pays at each
+        outcome — the real spread of risk the mid-mark hides.</p>
+      <table>
+        <tr><th style="width:38%">market</th><th class="n">position</th>
+            <th class="n">mid</th><th class="n">mark</th>
+            <th class="n">if 0</th><th class="n">if 1</th></tr>
+        ${rows}
+      </table>`;
+  }
+
+  const feed = (m && m.recent) || [];
+  if (!feed.length){
+    $("#mmfeed").innerHTML = "";
+  } else {
+    const rows = feed.map(f => {
+      const buy = f.side === "buy";
+      return `<tr>
+        <td class="muted" style="font-size:12px">${(f.ts||"").slice(11,19)}</td>
+        <td style="color:${buy ? "var(--ok)" : "var(--bad)"}">${buy ? "bought" : "sold"}</td>
+        <td class="n">${Number(f.qty).toFixed(0)}</td>
+        <td class="n">${f.px}</td>
+        <td class="n muted">${f.bid ?? "?"} / ${f.ask ?? "?"}</td>
+        <td class="n muted">${f.spread_ticks ?? "?"}t</td>
+        <td>${(f.market||"").replace(/^aec-/, "")}</td></tr>`;
+    }).join("");
+    $("#mmfeed").innerHTML = `
+      <h2 style="margin-top:14px">Recent fills</h2>
+      <p class="muted" style="font-size:12px;margin:0 0 6px">
+        Our own paper fills, newest first. "book" is where the real bid and ask
+        sat when we filled — we post one tick inside each, so our price should
+        always be better than the book we filled against.</p>
+      <table>
+        <tr><th style="width:9%">time</th><th>side</th><th class="n">qty</th>
+            <th class="n">our price</th><th class="n">book</th>
+            <th class="n">spread</th><th>market</th></tr>
+        ${rows}
+      </table>
+      <p class="muted" style="font-size:12px;margin-top:5px">
+        Every fill is also written to <code>mmfills-&lt;sport&gt;-&lt;date&gt;.csv.gz</code>
+        so a week of this can be scored against the backtest.</p>`;
   }
 
   const sports = Object.entries(d.sports || {});
