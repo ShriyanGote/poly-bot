@@ -409,7 +409,7 @@ async function load(){
       tile("prints that filled us", `${hr} <span class="muted" style="font-size:13px">${P.hit ?? 0}/${P.seen ?? 0}</span>`,
            P.hit_rate != null && P.hit_rate < .5 ? "var(--warn)" : null),
       tile("order ack ms p50/p90", ms("ack")),
-      tile("book→live ms", ms("decide")),
+      tile("book→live ms (incl. 1s requote pause)", ms("decide")),
       tile("fill heard ms", ms("fill_heard")),
       tile("post-only rejects", n(C.rejected || 0)),
       tile("net settled (real)", money(Number(r.net_settled)), col(Number(r.net_settled))),

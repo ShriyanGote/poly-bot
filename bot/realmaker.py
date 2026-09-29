@@ -100,6 +100,7 @@ class RealMaker:
         self.lat = {k: collections.deque(maxlen=1000)
                     for k in ("ack", "cancel", "decide", "fill_heard", "ws_new")}
         self.prints = []             # public trades at our price, awaiting a verdict
+        self._early = []             # our fills heard before their public print
         self.print_stats = {"hit": 0, "missed": 0, "shares_printed": ZERO,
                             "shares_filled": ZERO}
         self.counts = collections.Counter()
@@ -555,7 +556,11 @@ class RealMaker:
                 # "never take" premise is broken and we want to know at once.
                 self.counts["took_liquidity"] += 1
             self.counts["fills"] += 1
-            self._resolve_prints(slug, "bid" if buy else "ask", q)
+            if not self._resolve_prints(slug, "bid" if buy else "ask", q):
+                # Our fill usually beats the public print here by tens of ms.
+                # Hold it briefly so that print, when it comes, is matched.
+                self._early.append({"slug": slug, "side": "bid" if buy else "ask",
+                                    "px": px, "left": q, "at": heard})
             bb, ba = m.get("book") or (None, None)
             spread = (int((Decimal(ba) - Decimal(bb)) / config.DEFAULT_TICK)
                       if bb and ba else None)
@@ -597,6 +602,16 @@ class RealMaker:
         if not m or px is None or not qty:
             return
         side = (taker_side or "").upper()
+        want = "bid" if side.endswith("SELL") else "ask" if side.endswith("BUY") else None
+        for e in self._early:
+            if (e["slug"] == slug and e["side"] == want and e["left"] > 0
+                    and (px <= e["px"] if want == "bid" else px >= e["px"])):
+                take = min(qty, e["left"])
+                e["left"] -= take
+                self.prints.append({"slug": slug, "side": want, "px": str(px),
+                                    "qty": qty, "ours": str(e["px"]),
+                                    "at": time.time(), "filled": take})
+                return
         o_bid, o_ask = m["orders"].get("bid"), m["orders"].get("ask")
         if side.endswith("SELL") and o_bid and o_bid.get("id") \
                 and px <= Decimal(o_bid["px"]):
@@ -610,17 +625,23 @@ class RealMaker:
                                 "at": time.time(), "filled": ZERO})
 
     def _resolve_prints(self, slug, side, q):
+        """Credit a fill to prints already waiting. True if any were."""
+        hit = False
         for p in self.prints:
             if p["slug"] == slug and p["side"] == side and p["filled"] < p["qty"]:
                 take = min(q, p["qty"] - p["filled"])
                 p["filled"] += take
                 q -= take
+                hit = True
                 if q <= 0:
-                    return
+                    break
+        return hit
 
     def _flush_prints(self, final=False):
         """A print gets a few seconds for our fill to arrive, then a verdict."""
         now, keep = time.time(), []
+        self._early = [e for e in self._early
+                       if e["left"] > 0 and now - e["at"] < config.REALMM_PRINT_WAIT]
         for p in self.prints:
             if not final and now - p["at"] < config.REALMM_PRINT_WAIT:
                 keep.append(p)
