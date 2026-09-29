@@ -129,6 +129,10 @@ def main():
             await task
         except asyncio.CancelledError:
             pass
+        finally:
+            # Cancel resting real orders while the event loop still exists.
+            if rec.realmm:
+                await rec.realmm.stop()
 
     try:
         asyncio.run(go())

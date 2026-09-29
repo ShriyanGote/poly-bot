@@ -29,6 +29,13 @@ TRADE_HEADER = ["ts", "league", "sport", "market", "price", "qty", "taker_side",
 MMFILL_HEADER = ["ts", "league", "sport", "market", "side", "px", "qty",
                  "bid", "ask", "spread_ticks", "mid", "inv_after", "cash_after"]
 
+# The real-money maker's event log: every order, cancel, fill, rejection, and
+# every public print at our price with whether it filled us. One row per event
+# so latency and queue position can be studied after the fact.
+REALMM_HEADER = ["ts", "kind", "market", "side", "intent", "px", "qty",
+                 "book_bid", "book_ask", "spread_ticks", "latency_ms",
+                 "venue_time", "detail"]
+
 EXC_HEADER = ["ts", "kind", "league", "sport", "market", "side", "threshold",
               "start_px", "min_px", "peak_px", "cur_px", "recovered_ticks",
               "ticks_off_low", "dip_secs", "secs_since_low"]
@@ -111,13 +118,14 @@ class Store:
         self.trades = _Rolling("trades", TRADE_HEADER)
         self.exc = _Rolling("excursions", EXC_HEADER, flush_secs=10)
         self.mmfills = _Rolling("mmfills", MMFILL_HEADER, flush_secs=10)
+        self.realmm = _Rolling("realmm", REALMM_HEADER, flush_secs=10)
 
     def flush(self):
-        for t in (self.books, self.trades, self.exc, self.mmfills):
+        for t in (self.books, self.trades, self.exc, self.mmfills, self.realmm):
             t.flush()
 
     def close(self):
-        for t in (self.books, self.trades, self.exc, self.mmfills):
+        for t in (self.books, self.trades, self.exc, self.mmfills, self.realmm):
             t.close()
 
     @property

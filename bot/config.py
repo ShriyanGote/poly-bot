@@ -1,5 +1,6 @@
 """Central configuration."""
 
+import os
 from decimal import Decimal
 from typing import NamedTuple, Optional
 from pathlib import Path
@@ -59,6 +60,25 @@ MAKER_PREFIXES = ("aec-",)
 # ends, and scoring a binary at its mid instead of its outcome is the single
 # most flattering mistake available here, so wait hours rather than minutes.
 MAKER_SETTLE_GRACE = 6 * 3600
+
+# --- REAL-MONEY shadow of the maker ---------------------------------------------
+# Real post-only orders at the paper maker's prices, in a few markets at once,
+# to measure what paper cannot: order latency, queue position, whether the
+# prints paper counts as fills actually fill us. See docs/real-maker.md.
+# Off unless REALMM_ENABLED=1 is in the environment (.env on the server).
+REALMM_ENABLED = os.environ.get("REALMM_ENABLED", "") == "1"
+# Worst-case loss across every position AND every resting order, assuming all
+# opening orders fill and every match goes against us. Checked before each order.
+REALMM_BUDGET = Decimal(os.environ.get("REALMM_BUDGET", "20"))
+REALMM_SIZE = 5                        # shares per quote (the venue takes whole shares)
+REALMM_MAX_INV = 10                    # per-market position cap, either side
+REALMM_MAX_MARKETS = 3                 # markets quoted at once
+REALMM_SPORTS = {"tennis", "esports"}  # where the paper maker is most active
+REALMM_MIN_REQUOTE_SECS = 1.0          # per market; changes in between coalesce
+REALMM_MAX_ACTIONS_PER_SEC = 4         # all order creates + cancels together
+REALMM_RECONCILE_SECS = 30             # compare with the venue's own records
+REALMM_PRINT_WAIT = 5.0                # seconds a print gets for our fill to show
+REALMM_STATE = DATA / "realmm_state.json"
 
 # --- longshot convexity engine ------------------------------------------------
 # Buy cheap and hold: loss is capped at the premium paid, so there is no stop to

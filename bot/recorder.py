@@ -18,6 +18,7 @@ from .excursions import Excursions
 from .longshot import Longshot
 from .maker import Maker
 from .paper import Paper
+from .realmaker import RealMaker
 from .storage import Store
 
 
@@ -72,6 +73,11 @@ class Recorder:
                          if (on and config.LONGSHOT_ENABLED) else None)
         self.maker = (Maker(self.log, on_fill=self.store.mmfills.write)
                       if (on and config.MAKER_ENABLED) else None)
+        # Real orders at the paper maker's prices. It shadows the maker, so it
+        # only exists alongside it, and stays inert unless REALMM_ENABLED.
+        self.realmm = (RealMaker(self.log, write=self.store.realmm.write,
+                                 title=self._title)
+                       if self.maker and config.REALMM_ENABLED else None)
         self.meta = {}
         # request_id -> the markets that request carried. The per-connection
         # cap is reported as an async error frame AFTER the subscribe call
@@ -179,6 +185,11 @@ class Recorder:
                     slug, d(px) if px is not None else None,
                     d(qty) if qty is not None else None,
                     (t.get("taker") or {}).get("side"))
+                if self.realmm:
+                    self.realmm.on_trade(
+                        slug, d(px) if px is not None else None,
+                        d(qty) if qty is not None else None,
+                        (t.get("taker") or {}).get("side"))
             except Exception as e:
                 self.log(f"maker trade error: {type(e).__name__} {str(e)[:80]}")
 
@@ -229,7 +240,18 @@ class Recorder:
                 self.log(f"paper error: {type(e).__name__} {str(e)[:80]}")
         if self.maker:
             try:
-                self.maker.on_book(slug, league, bid, ask, tick, time.time())
+                # Both makers read the book with our real orders taken out;
+                # otherwise our own bid is "the best bid" and we quote off it.
+                mb, ma = bid, ask
+                if self.realmm:
+                    xb, xo = self.realmm.ex_self(slug, bids, offers)
+                    mb = d(xb[0]["px"]["value"]) if xb else None
+                    ma = d(xo[0]["px"]["value"]) if xo else None
+                if mb is not None and ma is not None and ma > mb:
+                    self.maker.on_book(slug, league, mb, ma, tick, time.time())
+                    if self.realmm:
+                        self.realmm.on_book(slug, league, mb, ma, tick,
+                                            self.maker.books.get(slug))
             except Exception as e:
                 self.log(f"maker error: {type(e).__name__} {str(e)[:80]}")
         if self.longshot:
@@ -650,6 +672,8 @@ class Recorder:
                  f"| band {config.BAND_LO}-{config.BAND_HI}")
         backoff = 5
         first_guard = True
+        if self.realmm:
+            await self.realmm.start()
         while True:
             try:
                 for c in self.conns:
@@ -830,6 +854,11 @@ class Recorder:
                     for slug in self.maker.pending:
                         if slug.startswith("aec-"):
                             self._queue_settle(slug, time.time())
+                    if self.realmm:
+                        self.realmm.reap(set(found), self._settlement_of)
+                        for slug, m in self.realmm.mk.items():
+                            if not m["active"]:
+                                self._queue_settle(slug, time.time())
                     self.maker.save()
                 if self.longshot:
                     k = await asyncio.to_thread(self.longshot.settle_gone,
@@ -907,6 +936,8 @@ class Recorder:
             "tape_gb": tape_gb,
             "sports": sports,
             "maker": self.maker.summary(self._title) if self.maker else None,
+            "realmm": (self.realmm.summary(self.maker.books) if self.realmm
+                       else {"enabled": False}),
             # What is actually armed, so the page never has to guess. The whole
             # point of showing this is that "which engine is running" was
             # previously only answerable by reading config on the box.
@@ -979,6 +1010,8 @@ class Recorder:
 
     def shutdown(self):
         self._save_pending()
+        if self.realmm:
+            self.realmm.save()
         if self.maker:
             self.maker.save()
             self.log(f"maker {self.maker.summary()}")

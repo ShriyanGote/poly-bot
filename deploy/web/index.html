@@ -66,6 +66,7 @@
   <div id="mmverdict"></div>
   <div id="mmpos"></div>
   <div id="mmsettled"></div>
+  <div id="realmm"></div>
   <div id="mmfeed"></div>
   <details id="mmhelp"><summary>What this strategy is, and what would kill it</summary>
     <div class="note">
@@ -387,6 +388,88 @@ async function load(){
         ${early.length ? `${early.length} early markets were closed at their last price before
         settlements were waited for (${money(early.reduce((t, c) => t + Number(c.pnl), 0))});
         they cannot be re-scored and are left out.` : ""}</p>`;
+  }
+
+  // --- real-money test ---------------------------------------------------
+  const r = d.realmm;
+  if (!r || !r.enabled){
+    $("#realmm").innerHTML = "";
+  } else {
+    const L = r.latency_ms || {}, C = r.counts || {}, P = r.prints || {};
+    const ms = k => L[k] && L[k].n ? `${Math.round(L[k].p50)} <span class="muted" style="font-size:13px">/ ${Math.round(L[k].p90)}</span>` : "—";
+    const state = r.halted ? `<span class="pill" style="border-color:var(--bad);color:var(--bad)"><b>HALTED</b> — ${esc(r.halted)}</span>`
+      : !r.stream_ok ? `<span class="pill" style="border-color:var(--warn);color:var(--warn)"><b>paused</b> — order stream down, nothing resting</span>`
+      : `<span class="pill" style="border-color:var(--ok)"><b>live</b> — real orders</span>`;
+    const hr = P.hit_rate == null ? "—" : Math.round(P.hit_rate * 100) + "%";
+    const exp = Number(r.exposure), bud = Number(r.budget);
+    const tiles = [
+      tile("worst case / cap", `$${exp.toFixed(2)} <span class="muted" style="font-size:13px">/ $${bud.toFixed(0)}</span>`,
+           exp > bud * .8 ? "var(--warn)" : null),
+      tile("real fills", n(C.fills || 0)),
+      tile("prints that filled us", `${hr} <span class="muted" style="font-size:13px">${P.hit ?? 0}/${P.seen ?? 0}</span>`,
+           P.hit_rate != null && P.hit_rate < .5 ? "var(--warn)" : null),
+      tile("order ack ms p50/p90", ms("ack")),
+      tile("book→live ms", ms("decide")),
+      tile("fill heard ms", ms("fill_heard")),
+      tile("post-only rejects", n(C.rejected || 0)),
+      tile("net settled (real)", money(Number(r.net_settled)), col(Number(r.net_settled))),
+    ].join("");
+    const mrows = (r.markets || []).map(x => {
+      const [a, b] = sides(x.title);
+      const nn = Number(x.n);
+      const pos = Math.abs(nn) < .005 ? "flat" : `${Math.abs(nn).toFixed(0)} on ${esc(nn > 0 ? a : b)}`;
+      const o = x.orders || {};
+      const q = (x.book ? `${x.book[0]} / ${x.book[1]}` : "—");
+      const ours = `${o.bid ? o.bid.leaves + " @ " + o.bid.px : "—"} · ${o.ask ? o.ask.leaves + " @ " + o.ask.px : "—"}`;
+      const pp = x.paper;
+      return `<tr>
+        <td>${esc(x.title || x.market.replace(/^aec-/, ""))}
+            <div class="muted" style="font-size:12px">${esc(x.league)} · since ${ago(x.started_at)}${x.active ? "" : " · ended, awaiting result"}</div></td>
+        <td style="font-size:13px">${ours}<div class="muted" style="font-size:12px">book ${q}</div></td>
+        <td class="n">${x.fills} <span class="muted" style="font-size:12px">(${Number(x.shares).toFixed(0)} sh)</span>
+            <div class="muted" style="font-size:12px">${pos}</div></td>
+        <td class="n" style="color:${col(Number(x.mark ?? 0))}">${x.mark == null ? "—" : money(Number(x.mark))}
+            <div class="muted" style="font-size:12px">worst −$${Number(x.worst).toFixed(2)}</div></td>
+        <td class="n muted">${pp ? `${pp.fills} <span style="font-size:12px">(${Number(pp.shares).toFixed(0)} sh)</span>` : "—"}
+            <div style="font-size:12px">${pp && pp.mark != null ? money(Number(pp.mark)) + " marked" : ""}</div></td></tr>`;
+    }).join("");
+    const frows = (r.recent || []).map(f => `<tr>
+        <td class="muted" style="font-size:12px">${(f.ts||"").slice(11,19)}</td>
+        <td style="color:${f.side === "buy" ? "var(--ok)" : "var(--bad)"}">${f.side === "buy" ? "bought" : "sold"}</td>
+        <td class="n">${Number(f.qty).toFixed(0)}</td><td class="n">${f.px}</td>
+        <td class="n muted">${f.book_bid ?? "?"} / ${f.book_ask ?? "?"}</td>
+        <td class="n muted">${f.spread_ticks ?? "?"}t</td>
+        <td class="n muted">${f.heard_ms ?? "?"}ms</td>
+        <td>${esc(f.title || f.market)}${f.aggressor ? ` <b style="color:var(--bad)">TOOK LIQUIDITY</b>` : ""}</td></tr>`).join("");
+    const crows = (r.closed || []).map(c => `<tr>
+        <td>${esc(c.title || c.slug)}</td><td class="n">${c.fills}</td>
+        <td class="n muted">${c.close}</td>
+        <td class="n" style="color:${col(Number(c.pnl))}">${money(Number(c.pnl))}</td></tr>`).join("");
+    $("#realmm").innerHTML = `
+      <h2 style="margin-top:26px">Real-money test</h2>
+      <div>${state}</div>
+      <p class="muted" style="font-size:12px;margin:4px 0 8px">
+        Real post-only orders at the paper maker's prices, ${r.size} shares a
+        side, in up to a few markets at once. The worst-case loss across every
+        position and resting order is capped at $${bud.toFixed(0)}.
+        <b>Prints that filled us</b> is the number paper cannot produce: of the
+        trades at or through our resting price (paper counts every one as its
+        fill), how many actually filled us. Paper assumes 100%.</p>
+      <div class="row">${tiles}</div>
+      ${mrows ? `<table>
+        <tr><th style="width:28%">match</th><th>our bid · ask</th>
+            <th class="n">real fills</th><th class="n">real mark</th>
+            <th class="n">paper, same window</th></tr>${mrows}</table>
+        <p class="muted" style="font-size:12px;margin-top:5px">Paper quotes 20
+        shares a side to our ${r.size}, so compare fill counts, not shares.</p>`
+        : `<p class="muted">No real markets yet — it joins when the paper maker quotes a wide ${""}tennis or esports market.</p>`}
+      ${frows ? `<h2 style="margin-top:14px">Real fills</h2><table>
+        <tr><th>time</th><th>side</th><th class="n">qty</th><th class="n">price</th>
+            <th class="n">book</th><th class="n">spread</th><th class="n">heard</th><th>match</th></tr>
+        ${frows}</table>` : ""}
+      ${crows ? `<h2 style="margin-top:14px">Real markets settled</h2><table>
+        <tr><th>match</th><th class="n">fills</th><th class="n">result</th><th class="n">P&amp;L</th></tr>
+        ${crows}</table>` : ""}`;
   }
 
   const feed = (m && m.recent) || [];
