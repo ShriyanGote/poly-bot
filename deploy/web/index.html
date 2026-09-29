@@ -414,6 +414,49 @@ async function load(){
       tile("post-only rejects", n(C.rejected || 0)),
       tile("net settled (real)", money(Number(r.net_settled)), col(Number(r.net_settled))),
     ].join("");
+    const badge = st => ({ok: ["var(--ok)", "looks fine"], bad: ["var(--bad)", "problem"],
+                           early: ["var(--dim)", "too early"]})[st] || ["var(--dim)", st];
+    const frow = f => {
+      const [c, word] = badge(f.status);
+      const need = f.status === "early"
+        ? ` <span class="muted">(${f.n} of 30 needed)</span>` : "";
+      return `<tr><td>${esc(f.q)}</td>
+        <td><b style="color:${c}">${word}</b>${need}</td>
+        <td>${esc(f.value)}<div class="muted" style="font-size:12px">${esc(f.note)}</div></td></tr>`;
+    };
+    const api = d.api || r.api || {};
+    const arows = Object.entries(api.by_category || {})
+      .sort((a, b) => b[1].last_hour - a[1].last_hour)
+      .map(([k, v]) => `<tr><td>${esc(k)}</td><td class="n">${v.last_min}</td>
+        <td class="n">${v.last_hour}</td><td class="n">${v.p50_ms ?? "—"}</td>
+        <td class="n" style="color:${v.limited_hour ? "var(--bad)" : "var(--dim)"}">${v.limited_hour}
+          <span class="muted" style="font-size:12px">(${v.limited_total} all-time)</span></td></tr>`).join("");
+    const MO = r.markout || {};
+    const mocell = (k, h) => {
+      const v = (MO[k] || {})[h];
+      return v && v.n ? `${v.edge_c >= 0 ? "+" : ""}${v.edge_c}¢ → ${v.mark_c >= 0 ? "+" : ""}${v.mark_c}¢
+        <span class="muted" style="font-size:12px">n=${v.n}</span>` : "—";
+    };
+    const hs = Object.keys(MO.real || {});
+    const feas = `
+      <h2 style="margin-top:14px">Is real money feasible?</h2>
+      <table><tr><th style="width:30%">question</th><th>so far</th><th>evidence</th></tr>
+        ${(r.feasibility || []).map(frow).join("")}</table>
+      <h2 style="margin-top:14px">Real vs paper, same markets, same windows</h2>
+      <table><tr><th></th><th class="n">fills</th>
+          ${hs.map(h => `<th class="n">edge at fill → value ${h}s later</th>`).join("")}</tr>
+        <tr><td>real</td><td class="n">${(r.fill_events || {}).real ?? 0}</td>
+          ${hs.map(h => `<td class="n">${mocell("real", h)}</td>`).join("")}</tr>
+        <tr><td>paper</td><td class="n">${(r.fill_events || {}).paper ?? 0}</td>
+          ${hs.map(h => `<td class="n">${mocell("paper", h)}</td>`).join("")}</tr></table>
+      <p class="muted" style="font-size:12px;margin-top:5px">Per share, in our favour.
+        <b>Edge at fill</b> is how far inside the mid we traded — what we were paid
+        to provide the quote. <b>Value later</b> is the same trade marked at the mid
+        after the delay. If real falls much further than paper, the people who
+        trade with real orders know something paper's fills don't capture.</p>
+      <h2 style="margin-top:14px">API usage (whole bot, one key)</h2>
+      <table><tr><th>kind</th><th class="n">last min</th><th class="n">last hour</th>
+          <th class="n">p50 ms</th><th class="n">rate-limited (hour)</th></tr>${arows}</table>`;
     const mrows = (r.markets || []).map(x => {
       const [a, b] = sides(x.title);
       const nn = Number(x.n);
@@ -456,6 +499,7 @@ async function load(){
         trades at or through our resting price (paper counts every one as its
         fill), how many actually filled us. Paper assumes 100%.</p>
       <div class="row">${tiles}</div>
+      ${feas}
       ${mrows ? `<table>
         <tr><th style="width:28%">match</th><th>our bid · ask</th>
             <th class="n">real fills</th><th class="n">real mark</th>

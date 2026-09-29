@@ -87,8 +87,9 @@ def worst_loss(n, cash, bid=None, ask=None):
 
 
 class RealMaker:
-    def __init__(self, log, write=None, title=None):
+    def __init__(self, log, write=None, title=None, meter=None):
         self.log = log
+        self.meter = meter
         self.write = write or (lambda row: None)
         self.title = title or (lambda slug: None)
         self.enabled = config.REALMM_ENABLED
@@ -113,6 +114,14 @@ class RealMaker:
         self._backoff_until = 0.0
         self._drift = {}
         self._errors = collections.deque(maxlen=20)
+        # Where the mid went after each fill, real and paper, in the same
+        # markets over the same windows. {kind: {horizon: {"n", "shares",
+        # "edge", "mark"}}} as running sums of per-share cents x shares.
+        self.markout = {k: {h: {"n": 0, "shares": ZERO, "edge": ZERO, "mark": ZERO}
+                            for h in config.REALMM_MARKOUTS}
+                        for k in ("real", "paper")}
+        self.fill_events = collections.Counter()    # real/paper, same windows
+        self._pending_marks = []
         self._load()
 
     # --- persistence ----------------------------------------------------------
@@ -125,6 +134,14 @@ class RealMaker:
         self.closed = d.get("closed") or []
         self.halted = d.get("halted")
         self.counts.update(d.get("counts") or {})
+        for k, hs in (d.get("markout") or {}).items():
+            for h, v in hs.items():
+                h = int(h)
+                if k in self.markout and h in self.markout[k]:
+                    self.markout[k][h] = {"n": int(v["n"]),
+                                          **{x: Decimal(str(v[x]))
+                                             for x in ("shares", "edge", "mark")}}
+        self.fill_events.update(d.get("fill_events") or {})
         ps = d.get("print_stats") or {}
         for k in ("hit", "missed"):
             self.print_stats[k] = int(ps.get(k, 0))
@@ -138,6 +155,10 @@ class RealMaker:
         d = {"markets": {k: {**v, "want": None} for k, v in self.mk.items()},
              "closed": self.closed, "halted": self.halted,
              "counts": dict(self.counts),
+             "markout": {k: {str(h): {x: str(v) for x, v in hv.items()}
+                             for h, hv in hs.items()}
+                         for k, hs in self.markout.items()},
+             "fill_events": dict(self.fill_events),
              "print_stats": {k: str(v) for k, v in self.print_stats.items()}}
         try:
             tmp = config.REALMM_STATE.with_suffix(".tmp")
@@ -153,6 +174,8 @@ class RealMaker:
         self.client = AsyncPolymarketUS(
             key_id=os.environ["POLYMARKET_KEY_ID"],
             secret_key=os.environ["POLYMARKET_SECRET_KEY"])
+        if self.meter:
+            self.meter.wrap(self.client)
         await self._cancel_everything("startup")
         asyncio.ensure_future(self._private_loop())
         asyncio.ensure_future(self._housekeeping())
@@ -250,6 +273,7 @@ class RealMaker:
         if not m["active"]:
             return
         m["book"] = (str(bid), str(ask))
+        self._mark(slug, (bid + ask) / 2)
         tick = tick or config.DEFAULT_TICK
         ticks = int((ask - bid) / tick)
         want = {"bid": None, "ask": None}
@@ -556,6 +580,7 @@ class RealMaker:
                 # "never take" premise is broken and we want to know at once.
                 self.counts["took_liquidity"] += 1
             self.counts["fills"] += 1
+            self._note_fill("real", slug, buy, px, q)
             if not self._resolve_prints(slug, "bid" if buy else "ask", q):
                 # Our fill usually beats the public print here by tens of ms.
                 # Hold it briefly so that print, when it comes, is matched.
@@ -593,6 +618,51 @@ class RealMaker:
             if o is not None and m["orders"].get(side) is o:
                 m["orders"][side] = None
                 self._wake(slug)
+
+    # --- markouts: were we picked off? ---------------------------------------
+    def note_paper_fill(self, row):
+        """A paper fill. Only those in markets we are live in, while we are
+        live there, so real and paper are compared on the same ground."""
+        m = self.mk.get(row.get("market"))
+        if not m or not m["active"]:
+            return
+        try:
+            self._note_fill("paper", row["market"], row["side"] == "buy",
+                            Decimal(row["px"]), Decimal(row["qty"]))
+        except (KeyError, TypeError, ArithmeticError):
+            pass
+
+    def _note_fill(self, kind, slug, buy, px, q):
+        m = self.mk.get(slug)
+        bb, ba = (m or {}).get("book") or (None, None)
+        if not bb or not ba:
+            return
+        mid = (Decimal(bb) + Decimal(ba)) / 2
+        self.fill_events[kind] += 1
+        now = time.time()
+        for h in config.REALMM_MARKOUTS:
+            self._pending_marks.append({"kind": kind, "slug": slug, "buy": buy,
+                                        "px": px, "q": q, "mid0": mid,
+                                        "due": now + h, "h": h})
+
+    def _mark(self, slug, mid):
+        """Settle any markout whose horizon has passed, at the current mid.
+        Per share, in the direction of our trade:
+            edge = mid at fill - our price   (what we were paid to trade)
+            mark = mid at +h   - our price   (what it was worth h later)
+        edge minus mark is what the counterparty knew."""
+        now, keep = time.time(), []
+        for p in self._pending_marks:
+            if p["slug"] != slug or now < p["due"]:
+                keep.append(p)
+                continue
+            sgn = 1 if p["buy"] else -1
+            acc = self.markout[p["kind"]][p["h"]]
+            acc["n"] += 1
+            acc["shares"] += p["q"]
+            acc["edge"] += sgn * (p["mid0"] - p["px"]) * p["q"]
+            acc["mark"] += sgn * (mid - p["px"]) * p["q"]
+        self._pending_marks = keep
 
     # --- did we get the prints paper assumes? ----------------------------------
     def on_trade(self, slug, px, qty, taker_side):
@@ -764,6 +834,50 @@ class RealMaker:
                     if slug else "other", **kw})
 
     # --- reporting ------------------------------------------------------------
+    def _feasibility(self, lat, seen, mo, api):
+        """Each question the test exists to answer, with its verdict so far
+        and how much more data it needs before the verdict means anything."""
+        hr = self.print_stats["hit"] / seen if seen else None
+        h = str(max(config.REALMM_MARKOUTS))
+        real, paper = mo["real"][h], mo["paper"][h]
+        need = config.REALMM_MIN_SAMPLE
+        out = []
+
+        def add(q, ok, value, n, note):
+            out.append({"q": q, "value": value, "n": n,
+                        "status": ("early" if n < need else
+                                   "ok" if ok else "bad"),
+                        "note": note})
+
+        a = lat["ack"]
+        add("Fast enough?", a["p50"] is not None and a["p50"] < 150,
+            f"order live in {a['p50']}ms p50, {a['p90']}ms p90" if a["n"] else "—",
+            a["n"], "paper's backtest assumes 200ms; under 150ms is fine")
+        lim = (api or {}).get("limited_hour", 0)
+        add("Within API limits?", lim == 0,
+            f"{(api or {}).get('last_min', 0)} calls/min, {lim} rate-limited in the last hour",
+            need if api else 0,
+            "any 429 means requotes can stall with real orders resting")
+        add("Do the prints paper counts actually fill us?",
+            hr is not None and hr >= 0.6,
+            f"{round(hr * 100)}% ({self.print_stats['hit']}/{seen})" if seen else "—",
+            seen, "paper assumes 100%; below ~60% paper overstates fills badly")
+        if real["n"] and paper["n"]:
+            gap = real["mark_c"] - paper["mark_c"]
+            add("Picked off more than paper?", gap > -0.5,
+                f"real {real['mark_c']:+.2f}¢ vs paper {paper['mark_c']:+.2f}¢ per share after {h}s",
+                min(real["n"], paper["n"]),
+                "worth of each fill a minute later; real much worse = informed flow finds real orders")
+        else:
+            add("Picked off more than paper?", False, "—", 0,
+                "needs fills of both kinds in the same markets")
+        n_set = len(self.closed)
+        net = sum((Decimal(c["pnl"]) for c in self.closed), ZERO)
+        add("Making money on real results?", net > 0,
+            f"{money_str(net)} over {n_set} settled market{'s' if n_set != 1 else ''}",
+            n_set, "needs ~30+ settled markets; a handful is coin flips")
+        return out
+
     def summary(self, paper_books=None):
         if not self.enabled:
             return {"enabled": False}
@@ -803,7 +917,17 @@ class RealMaker:
                 "started_at": m["started_at"]})
         ps = self.print_stats
         seen = ps["hit"] + ps["missed"]
+        mo = {k: {str(h): {"n": v["n"],
+                           "edge_c": (round(float(v["edge"] / v["shares"]) * 100, 2)
+                                      if v["shares"] else None),
+                           "mark_c": (round(float(v["mark"] / v["shares"]) * 100, 2)
+                                      if v["shares"] else None)}
+                      for h, v in hs.items()}
+              for k, hs in self.markout.items()}
+        api = self.meter.summary() if self.meter else None
         return {
+            "markout": mo, "fill_events": dict(self.fill_events), "api": api,
+            "feasibility": self._feasibility(lat, seen, mo, api),
             "enabled": True, "halted": self.halted, "stream_ok": self.pws_ok,
             "budget": str(config.REALMM_BUDGET),
             "exposure": str(round(self.exposure(), 2)),
@@ -820,3 +944,7 @@ class RealMaker:
                                          ZERO), 2)),
             "recent": list(self.recent)[:25],
         }
+
+
+def money_str(x):
+    return ("+$" if x >= 0 else "-$") + f"{abs(x):.2f}"

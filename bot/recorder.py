@@ -19,6 +19,7 @@ from .longshot import Longshot
 from .maker import Maker
 from .paper import Paper
 from .realmaker import RealMaker
+from .apimeter import ApiMeter
 from .storage import Store
 
 
@@ -59,6 +60,9 @@ class Recorder:
             key_id=os.environ["POLYMARKET_KEY_ID"],
             secret_key=os.environ["POLYMARKET_SECRET_KEY"],
         )
+        # Every REST call, by kind, and every 429 - one key serves them all.
+        self.api = ApiMeter()
+        self.api.wrap(self.client)
         self.store = Store()
         self.disc = Discovery(self.client, self.log)
         self.exc = Excursions(on_event=self._on_excursion)
@@ -71,12 +75,12 @@ class Recorder:
         # control so the two can be compared on identical data.
         self.longshot = (Longshot(self.log, self.client)
                          if (on and config.LONGSHOT_ENABLED) else None)
-        self.maker = (Maker(self.log, on_fill=self.store.mmfills.write)
+        self.maker = (Maker(self.log, on_fill=self._on_paper_fill)
                       if (on and config.MAKER_ENABLED) else None)
         # Real orders at the paper maker's prices. It shadows the maker, so it
         # only exists alongside it, and stays inert unless REALMM_ENABLED.
         self.realmm = (RealMaker(self.log, write=self.store.realmm.write,
-                                 title=self._title)
+                                 title=self._title, meter=self.api)
                        if self.maker and config.REALMM_ENABLED else None)
         self.meta = {}
         # request_id -> the markets that request carried. The per-connection
@@ -391,6 +395,11 @@ class Recorder:
                 self.log(f"settlements recorded: {len(have)} total")
             except OSError:
                 pass
+
+    def _on_paper_fill(self, row):
+        self.store.mmfills.write(row)
+        if getattr(self, "realmm", None):
+            self.realmm.note_paper_fill(row)
 
     def _title(self, slug):
         """The match a market belongs to, as people would name it."""
@@ -938,6 +947,7 @@ class Recorder:
             "maker": self.maker.summary(self._title) if self.maker else None,
             "realmm": (self.realmm.summary(self.maker.books) if self.realmm
                        else {"enabled": False}),
+            "api": self.api.summary(),
             # What is actually armed, so the page never has to guess. The whole
             # point of showing this is that "which engine is running" was
             # previously only answerable by reading config on the box.

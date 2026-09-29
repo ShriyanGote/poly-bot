@@ -78,6 +78,8 @@ REALMM_MIN_REQUOTE_SECS = 1.0          # per market; changes in between coalesce
 REALMM_MAX_ACTIONS_PER_SEC = 4         # all order creates + cancels together
 REALMM_RECONCILE_SECS = 30             # compare with the venue's own records
 REALMM_PRINT_WAIT = 5.0                # seconds a print gets for our fill to show
+REALMM_MARKOUTS = (10, 60)             # seconds after a fill to read the mid
+REALMM_MIN_SAMPLE = 30                 # events before a feasibility check counts
 REALMM_STATE = DATA / "realmm_state.json"
 
 # --- longshot convexity engine ------------------------------------------------
