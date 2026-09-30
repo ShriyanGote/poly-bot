@@ -38,7 +38,12 @@ MAKER_STATE = DATA / "maker_state.json"
 #   MAKER          the wide-spread paper market maker. On.
 PAPER_SCALPER = False
 LONGSHOT_ENABLED = False
-MAKER_ENABLED = True
+#   MAKER          switched OFF 2026-09-29. It backtested at +$3,319/week and
+#                  lost $1,143 live in a day once markets settled at real
+#                  outcomes rather than mid-marks. Beaten to price 2.56x more
+#                  often than filled, and the median market only ever traded
+#                  ONE side, so it was never two-sided making in practice.
+MAKER_ENABLED = False
 
 # --- wide-spread market maker -------------------------------------------------
 # Quote both sides only where the spread is wide enough to pay for the
